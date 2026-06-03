@@ -22,6 +22,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto"); // built-in; used to hash the password for the login cookie
 const { createClient } = require("@supabase/supabase-js");
 
 // --- load secrets (environment variables, with a local file fallback) ---
@@ -53,6 +54,7 @@ const env = loadEnv();
 const SUPABASE_URL = env.NEXT_PUBLIC_SUPABASE_URL;
 const SERVICE_KEY = env.SUPABASE_SERVICE_ROLE_KEY;
 const EDITOR_PASSWORD = env.EDITOR_PASSWORD; // when set, locks the whole editor (see auth below)
+const EDITOR_USERNAME = env.EDITOR_USERNAME || "editor"; // not shown in the UI; only used to label log lines
 
 // If either secret is missing, there's no point continuing — stop with a hint.
 if (!SUPABASE_URL || !SERVICE_KEY) {
@@ -71,26 +73,107 @@ const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
 const app = express();
 app.use(express.json({ limit: "20mb" }));        // understand JSON request bodies (up to 20 MB, for big images)
 
-// --- password lock (only active when EDITOR_PASSWORD is set) ---
-// This is what makes the editor safe to put on a public URL. If EDITOR_PASSWORD
-// is set (you'd set it on Vercel), every request must carry that password via
-// the browser's built-in login popup (HTTP Basic Auth). The username is ignored;
-// only the password is checked. If EDITOR_PASSWORD is NOT set (typical on your
-// own machine), this whole block is skipped and the editor stays open as before.
+// --- password lock with a custom login page (only active when EDITOR_PASSWORD is set) ---
+// This is what makes the editor safe to put on a public URL. When EDITOR_PASSWORD
+// is set (e.g. on Vercel), unauthenticated visitors see OUR own password page
+// (not the browser's built-in popup). They type the password once; we set a small
+// login cookie, and every later request is let through because it carries that
+// cookie. If EDITOR_PASSWORD is NOT set (typical on your own machine), this whole
+// block is skipped and the editor stays open exactly as before — no password.
 if (EDITOR_PASSWORD) {
-  app.use((req, res, next) => {
-    const header = req.headers.authorization || "";
-    const [scheme, encoded] = header.split(" ");
-    if (scheme === "Basic" && encoded) {
-      // "Basic" auth sends "username:password" base64-encoded. Decode it and
-      // take everything after the first ":" as the password.
-      const decoded = Buffer.from(encoded, "base64").toString("utf8");
-      const password = decoded.slice(decoded.indexOf(":") + 1);
-      if (password === EDITOR_PASSWORD) return next(); // correct password → let them through
+  const COOKIE = "editor_auth"; // the name of our login cookie
+  // The cookie stores a HASH of the password, never the raw password. The server
+  // makes the same hash from EDITOR_PASSWORD and compares — so a stolen cookie
+  // still doesn't reveal the password itself.
+  const TOKEN = crypto.createHash("sha256").update(EDITOR_PASSWORD).digest("hex");
+
+  // Pull one cookie value out of the request's Cookie header (avoids needing an
+  // extra npm package just to read cookies).
+  const readCookie = (req, name) => {
+    for (const part of (req.headers.cookie || "").split(";")) {
+      const eq = part.indexOf("=");
+      if (eq > -1 && part.slice(0, eq).trim() === name) {
+        return decodeURIComponent(part.slice(eq + 1).trim());
+      }
     }
-    // No/!wrong password → ask the browser to show its login popup.
-    res.set("WWW-Authenticate", 'Basic realm="Menu editor"');
-    res.status(401).send("Authentication required.");
+    return null;
+  };
+
+  // The login page itself — a single self-contained HTML string (its own CSS, no
+  // external files) styled to match the editor's dark/gold theme. Just a password
+  // field; no username box. If ?bad=1 is present we show a "wrong password" note.
+  const loginPage = (bad) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign in — Menu Editor</title>
+<style>
+  :root{--bg:#14110d;--panel:#1d1812;--line:#38301f;--text:#f2e9da;--muted:#a8997f;--gold:#d4a574;--red:#ef4444}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);
+       color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .card{width:min(360px,92vw);background:var(--panel);border:1px solid var(--line);
+        border-radius:14px;padding:30px 26px;box-shadow:0 14px 34px rgba(0,0,0,.42);text-align:center}
+  .brand{font-size:34px;line-height:1;margin-bottom:8px}
+  h1{font-family:"Playfair Display",Georgia,serif;font-weight:600;font-size:22px;margin:0 0 4px}
+  p.sub{color:var(--muted);font-size:13px;margin:0 0 22px}
+  label{display:block;text-align:left;font-size:12px;color:var(--muted);margin:0 0 6px}
+  input{width:100%;background:#251f17;border:1px solid var(--line);color:var(--text);
+        border-radius:9px;padding:11px 12px;font-size:15px;font-family:inherit}
+  input:focus{outline:none;border-color:var(--gold)}
+  button{width:100%;margin-top:16px;background:var(--gold);color:#2a1d0c;border:0;
+         border-radius:9px;padding:11px;font-size:15px;font-weight:600;cursor:pointer}
+  button:hover{background:#e8b884}
+  .err{color:var(--red);font-size:13px;margin:14px 0 0;min-height:1em}
+</style></head>
+<body>
+  <form class="card" method="POST" action="/login">
+    <div class="brand">🍽️</div>
+    <h1>Menu Editor</h1>
+    <p class="sub">Enter the password to continue</p>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autofocus autocomplete="current-password" />
+    <button type="submit">Sign in</button>
+    <p class="err">${bad ? "Wrong password — try again." : ""}</p>
+  </form>
+</body></html>`;
+
+  // Let the login page submit as a normal HTML form (not just JSON).
+  app.use(express.urlencoded({ extended: false }));
+
+  // Show the login page. (A GET so visitors who aren't logged in land here.)
+  app.get("/login", (req, res) => {
+    if (readCookie(req, COOKIE) === TOKEN) return res.redirect("/"); // already in
+    res.type("html").send(loginPage(req.query.bad === "1"));
+  });
+
+  // Check the submitted password. Right → set the cookie and go to the editor.
+  // Wrong → back to the login page with the error note.
+  app.post("/login", (req, res) => {
+    const password = (req.body && req.body.password) || "";
+    if (password === EDITOR_PASSWORD) {
+      // HttpOnly: JS can't read it. SameSite=Lax + Path=/: sent on normal visits.
+      // Max-Age 7 days. "Secure" is added automatically by hosts that serve HTTPS.
+      res.set("Set-Cookie", `${COOKIE}=${TOKEN}; HttpOnly; SameSite=Lax; Path=/; Max-Age=604800`);
+      console.log(`  🔑 ${EDITOR_USERNAME} signed in`);
+      return res.redirect("/");
+    }
+    console.log(`  ⛔ failed sign-in attempt`);
+    res.redirect("/login?bad=1");
+  });
+
+  // Log out: clear the cookie and bounce back to the login page.
+  app.get("/logout", (req, res) => {
+    res.set("Set-Cookie", `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+    res.redirect("/login");
+  });
+
+  // The actual gate: any other request must carry a valid login cookie. If not,
+  // send them to the login page (browser visits get redirected; API/fetch calls
+  // get a clean 401 so the UI can react).
+  app.use((req, res, next) => {
+    if (readCookie(req, COOKIE) === TOKEN) return next();
+    if (req.path.startsWith("/api/")) return res.status(401).json({ error: "Not signed in" });
+    res.redirect("/login");
   });
 }
 
