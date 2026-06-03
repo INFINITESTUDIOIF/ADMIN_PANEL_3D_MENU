@@ -673,3 +673,59 @@ body { background: radial-gradient(1100px 560px at 78% -12%, #1d160f 0%, var(--b
 /* the modal sits above a slightly darker, blurrier scrim for focus */
 .tbl-modal-overlay { background: rgba(0,0,0,0.62); backdrop-filter: blur(7px); }
 .tbl-modal { box-shadow: 0 36px 80px rgba(0,0,0,0.62); }
+
+/* ============================ MOBILE / RESPONSIVE ============================
+   Everything above is the desktop design (a fixed 320px sidebar next to the
+   editor, and a topbar with all the tabs in one row). On a phone that doesn't
+   fit: the tabs run off the screen and the sidebar steals half the width. This
+   block only kicks in at <= 760px and reshapes the SAME markup for small screens:
+     1. Topbar: brand + status on top, tabs become a swipeable row underneath.
+     2. Layout: one column — the list sits on top, the editor flows below it, and
+        the whole page scrolls (instead of two side-by-side panes).
+     3. Multi-column forms / grids collapse to a single column.
+   Nothing here changes desktop; it's purely additive for narrow viewports. */
+@media (max-width: 760px) {
+  /* belt-and-braces: never let a stray wide element scroll the whole page sideways */
+  html, body { overflow-x: hidden; }
+
+  /* --- top bar: two rows, with the tabs on a horizontally-swipeable strip --- */
+  .topbar {
+    height: auto; flex-wrap: wrap; gap: 8px 14px; padding: 10px 14px;
+  }
+  .brand { font-size: 18px; }
+  .conn { margin-left: auto; }              /* stays top-right, on the brand's row */
+  .tabs {
+    order: 3; width: 100%;                  /* full-width row beneath the brand */
+    flex-wrap: nowrap; overflow-x: auto;    /* swipe sideways through the tabs */
+    -webkit-overflow-scrolling: touch;
+    gap: 6px; padding-bottom: 2px;
+    scrollbar-width: none;                  /* hide the scrollbar (Firefox) */
+  }
+  .tabs::-webkit-scrollbar { display: none; } /* hide the scrollbar (Chrome/Safari) */
+  .tab { flex: 0 0 auto; padding: 7px 14px; font-size: 13px; white-space: nowrap; }
+
+  /* --- main layout: single column, page scrolls instead of fixed panes --- */
+  .layout { grid-template-columns: 1fr; height: auto; }
+  .sidebar {
+    border-right: none; border-bottom: 1px solid var(--line);
+    max-height: 42vh;                       /* list scrolls inside; editor sits below it */
+  }
+  .sidebar-resizer { display: none; }       /* no drag-to-resize on touch */
+  .editor { padding: 0 16px 60px; }
+
+  /* the editor's sticky title would collide with the sticky topbar — make it normal */
+  .ed-head { position: static; margin: 0 -16px 18px; padding: 16px; }
+  .ed-head h2 { font-size: 21px; }
+
+  /* --- forms & grids: stack to one column so fields aren't squashed --- */
+  .grid.cols-2, .grid.cols-3, .grid.cols-6 { grid-template-columns: 1fr; }
+  .field.span-2 { grid-column: auto; }
+
+  /* floor tiles: two even columns instead of a fixed 162px width */
+  .ftile-grid { grid-template-columns: 1fr 1fr; }
+
+  /* log: the 7-column table can't fit — drop the header and let cells wrap in 2s */
+  .logrow.loghead { display: none; }
+  .logrow { grid-template-columns: 1fr 1fr; }
+  .logacts { justify-content: flex-start; }
+}
