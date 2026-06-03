@@ -1,0 +1,16 @@
+{
+  "name": "lfh-menu-editor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Menu editor for the Little French House (writes to Supabase). Runs locally, or on Vercel with an EDITOR_PASSWORD set.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "node -e \"console.log('No build step needed — Express server runs as-is.')\""
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "express": "^4.21.2"
+  }
+}
