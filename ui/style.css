@@ -708,10 +708,38 @@ body { background: radial-gradient(1100px 560px at 78% -12%, #1d160f 0%, var(--b
   .layout { grid-template-columns: 1fr; height: auto; }
   .sidebar {
     border-right: none; border-bottom: 1px solid var(--line);
-    max-height: 42vh;                       /* list scrolls inside; editor sits below it */
+    min-width: 0;                           /* let the grid cell shrink so children can scroll, not stretch the page */
   }
   .sidebar-resizer { display: none; }       /* no drag-to-resize on touch */
   .editor { padding: 0 16px 60px; }
+
+  /* On a phone the item list becomes a HORIZONTAL, swipeable strip of cards
+     (instead of a tall vertical list that pushes the editor off-screen). You
+     swipe sideways through the dishes; the visible gold scrollbar shows there's
+     more. Tapping a card still opens it in the editor below. */
+  .list {
+    flex: none;                             /* don't stretch to fill height */
+    min-width: 0;                           /* CRITICAL: without this the row grows to fit all cards and scrolls the whole page */
+    display: flex; flex-direction: row; flex-wrap: nowrap;
+    gap: 10px; padding: 12px;
+    overflow-x: auto; overflow-y: hidden;   /* scroll sideways, not down */
+    scroll-snap-type: x proximity;          /* cards gently snap into place */
+  }
+  .list-item {
+    flex: 0 0 auto; width: 210px;           /* each card is a fixed width */
+    scroll-snap-align: start;
+    background: var(--panel-2);             /* give each card a surface */
+    border-color: var(--line);
+  }
+  .list-item:hover { transform: none; }     /* the sideways nudge makes no sense in a row */
+  .list-item .meta { flex: 1; min-width: 0; }
+  /* a slim gold horizontal scrollbar so it's obvious you can swipe */
+  .list::-webkit-scrollbar { height: 8px; }
+  .list::-webkit-scrollbar-track { background: transparent; }
+  .list::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--gold) 55%, transparent); border-radius: 999px;
+  }
+  .list { scrollbar-color: color-mix(in srgb, var(--gold) 55%, transparent) transparent; } /* Firefox */
 
   /* the editor's sticky title would collide with the sticky topbar — make it normal */
   .ed-head { position: static; margin: 0 -16px 18px; padding: 16px; }
