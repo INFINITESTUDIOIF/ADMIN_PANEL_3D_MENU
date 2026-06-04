@@ -38,6 +38,7 @@ const state = {
   sel: null,      // working copy of the record being edited
   isNew: false,
   search: "",
+  catFilter: "", // Dishes tab: selected category slug to filter by ("" = All)
   board: { sessions: [], members: [], items: [], requests: [], blocklist: [] }, // v2 sessions live board
   openSess: null, // table number whose session modal is open
   users: { members: [], customers: [], blocklist: [] }, // Log tab data
@@ -168,6 +169,26 @@ function nextSort() {
 
 // renderList: draw the left-hand list of rows for the current tab. The special
 // tabs (general/orders/tables) show a single fixed entry instead of a real list.
+// renderCatFilter: the Dishes-tab category chips. Tap one to show only that
+// category's dishes; "All" clears the filter. Hidden on every other tab.
+function renderCatFilter() {
+  const bar = $("#catFilter");
+  if (!bar) return;
+  if (state.tab !== "items") { bar.hidden = true; bar.innerHTML = ""; return; }
+  bar.hidden = false;
+  const cats = state.data.categories || [];
+  const chip = (slug, label, icon, active) =>
+    `<button type="button" class="cat-chip ${active ? "active" : ""}" data-cat="${esc(slug)}">${icon ? `<i class="fas ${esc(icon)}"></i> ` : ""}<span>${esc(label)}</span></button>`;
+  let html = chip("", "All", "fa-layer-group", !state.catFilter);
+  html += cats.map((c) => chip(c.slug, (c.name && c.name.en) || c.slug, c.icon, state.catFilter === c.slug)).join("");
+  bar.innerHTML = html;
+  bar.querySelectorAll(".cat-chip").forEach((b) => (b.onclick = () => {
+    state.catFilter = b.dataset.cat; // "" for All
+    renderCatFilter(); // restyle the active chip
+    renderList();      // re-filter the dish list
+  }));
+}
+
 function renderList() {
   const ul = $("#list");
   ul.innerHTML = ""; // wipe the old list before drawing the new one
@@ -184,7 +205,11 @@ function renderList() {
     return;
   }
   const q = state.search.toLowerCase();
+  // On the Dishes tab, also narrow to the chosen category (if any).
+  const catF = state.tab === "items" ? state.catFilter : "";
   records()
+    // keep only dishes in the chosen category (Dishes tab; "" = All)
+    .filter((r) => !catF || r.category === catF)
     // keep only rows that match the search box (search across the whole row's text)
     .filter((r) => !q || JSON.stringify(r).toLowerCase().includes(q))
     .forEach((r) => {
@@ -373,8 +398,8 @@ function formItems(it) {
   <div class="card"><h3>Basics</h3>
     <div class="grid cols-2">
       ${tf("Title", "title", it.title, { span: true })}
-      ${tf("ID (permanent)", "id", it.id, { disabled: !state.isNew, hint: "Unique. Can't change later." })}
-      ${tf("Slug (URL)", "slug", it.slug, { ph: "gourmet-burger" })}
+      ${tf("ID (permanent)", "id", it.id, { disabled: !state.isNew, ph: state.isNew ? "auto from title" : "", hint: state.isNew ? "Leave blank — we'll make it from the title." : "Unique. Can't change later." })}
+      ${tf("Slug (URL)", "slug", it.slug, { ph: state.isNew ? "auto from title" : "gourmet-burger", hint: state.isNew ? "Leave blank to auto-fill from the title." : "" })}
       ${tf("Price", "price", it.price, { ph: "12.99" })}
       ${catSelect(it.category)}
       ${tf("Sort order", "sort_order", it.sort_order, { type: "number" })}
@@ -1039,6 +1064,15 @@ async function save() {
   const it = state.sel;
   const kind = state.tab === "general" ? "settings" : state.tab; // which table to write to
   const keyField = (state.tab === "items" || state.tab === "general") ? "id" : "slug"; // its unique-key column
+  // New dish: if the id (permanent key) or slug (URL) weren't filled in, derive
+  // them from the title so adding a dish never fails for a missing key. You only
+  // have to type a name. (Editing keeps the existing id/slug untouched.)
+  if (state.tab === "items" && state.isNew) {
+    const slugify = (s) => String(s || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!it.slug && it.title) it.slug = slugify(it.title);
+    if (!it.id) it.id = it.slug || slugify(it.title);
+  }
+  if (state.tab === "items" && !it.title) { toast("Give the dish a name first", "err"); return; }
   if (!it[keyField]) { toast(`${keyField === "id" ? "ID" : "Slug"} is required`, "err"); return; }
   if (state.tab === "items" && !it.slug) { toast("Slug is required", "err"); return; }
 
@@ -1101,6 +1135,24 @@ function timeAgo(ts) {
 // Fetch the whole board in one call. `fromPoll` = silent (no error toast, and don't
 // stomp the editor while the owner is typing in an input).
 let lastBoardSig = ""; // last rendered board fingerprint — skip needless re-renders on poll
+
+// ── Serve debounce ───────────────────────────────────────────────────────────
+// Marking dishes served one-by-one USED to refetch the whole board (3 network
+// GETs) and redraw on EVERY click — so serving 1,2,3,4,5… felt laggy and the
+// 1-second poll redrew on top of it. Now each serve click updates the board
+// LOCALLY and redraws instantly (no network), and we do ONE real server
+// reconcile only after you've STOPPED clicking for 5 seconds. While that flush
+// is pending, the background poll leaves the open panel alone so it can't redraw
+// under your fingers. (The click still saves to the server immediately — it's
+// only the refetch/redraw that waits.)
+let serveFlushTimer = null;
+const SERVE_FLUSH_MS = 5000;
+function scheduleServeFlush() {
+  if (serveFlushTimer) clearTimeout(serveFlushTimer);
+  serveFlushTimer = setTimeout(() => { serveFlushTimer = null; loadSessions(); }, SERVE_FLUSH_MS);
+}
+function serveFlushPending() { return serveFlushTimer != null; }
+
 // loadSessions: fetch (or reuse) the live tables board and redraw the floor. The
 // `fromPoll` flag means "this was the automatic 1-second refresh", so we stay quiet
 // (no error toast) and avoid redrawing while the owner is typing or clicking.
@@ -1176,9 +1228,17 @@ async function banMember(id, phone) {
   } catch (e) { toast("Failed: " + e.message, "err"); }
 }
 // itemStatus: move one session item forward (received → preparing → served).
+// Saves to the server right away, then updates the board LOCALLY and redraws
+// instantly (no refetch). The real reconcile happens 5s after the last click —
+// see scheduleServeFlush — so serving several dishes in a row stays smooth.
 async function itemStatus(id, status) {
-  try { await api("POST", "/items/" + id + "/status", { status }); await loadSessions(); toast("Item → " + status, "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  try {
+    await api("POST", "/items/" + id + "/status", { status });   // persist now
+    const it = (state.board.items || []).find((i) => i.id === id); // optimistic local update
+    if (it) it.status = status;
+    renderTablePanel();                                            // instant redraw from local state
+    scheduleServeFlush();                                          // one real refresh after you stop clicking
+  } catch (e) { toast("Failed: " + e.message, "err"); }
 }
 // resolveRequest: approve or dismiss a queued "let me in / open this table" request.
 async function resolveRequest(id, status) {
@@ -1319,7 +1379,11 @@ function floorHtml() {
     else if (hasNew) quick = `<button class="btn small primary ftq" data-quick-accept="${i}">Accept</button>`;
     else if (done) quick = `<div class="ft-quick2"><button class="btn small ftq2" data-quick-restart="${i}" title="Restart — clear orders, keep table open">RST</button><button class="btn small primary ftq2" data-quick-close="${i}" title="Close & free the table">CLS</button></div>`;
     else if (hasCall) quick = `<button class="btn small ftq" data-quick-attend="${i}">Attend</button>`;
+    // A faint chair watermark marks an OFF/free table (an empty seat) — a quiet,
+    // premium cue that the table is available.
+    const offIcon = st === "free" ? `<i class="fas fa-chair ft-officon" aria-hidden="true"></i>` : "";
     tiles += `<div class="ftile ft-${st}${pay ? " pay-" + pay : ""}" data-floor-table="${i}" role="button" tabindex="0">
+        ${offIcon}
         <div class="ft-top"><span class="ft-num">${i}</span>${badges ? `<span class="ft-badges">${badges}</span>` : ""}</div>
         <div class="ft-label">${esc(label)}</div><div class="ft-meta">${esc(meta)}</div>
         ${quick ? `<div class="ft-quick">${quick}</div>` : ""}</div>`;
@@ -1513,7 +1577,13 @@ function renderTablePanel() {
       }
       return `<div class="tp-order"><div class="tp-order-head">Order ${oi + 1}${when ? ` · ${when}` : ""}</div><div class="tp-order-top"><span class="pay-pill ${paid ? "paid" : "pending"}">${paid ? "💳 Paid" : "⏳ Unpaid"}</span><span class="tp-order-total">${esc((parseFloat(o.total) || 0).toFixed(2))}</span><button class="btn small ${paid ? "" : "primary"}" data-pay="${esc(o.id)}" data-paid="${paid ? "1" : "0"}">${paid ? "↩ Unpaid" : "Mark paid"}</button></div>${body}</div>`;
     }).join("");
-    ordersSec = `<div class="sx-sec"><div class="sx-sec-h">Orders <span class="sub">· ${os.length}</span></div>${orderBlocks}</div>`;
+    // A table-wide "serve everything" button when there are several orders with
+    // anything still unserved (in addition to each order's own "Serve all").
+    const anyUnservedAll = os.some((o) => orderItemRows(o).some((r) => r.status !== "served"));
+    const serveAllOrdersBtn = (os.length > 1 && anyUnservedAll)
+      ? `<button class="btn small primary tp-serve-all-orders" data-serve-all-orders="${esc(t)}">✓ Serve ALL orders (${os.length})</button>`
+      : "";
+    ordersSec = `<div class="sx-sec"><div class="sx-sec-h">Orders <span class="sub">· ${os.length}</span></div>${orderBlocks}${serveAllOrdersBtn}</div>`;
   }
 
   // Each active call (water, napkins, clean…) gets its own "Done" button so staff
@@ -1539,6 +1609,7 @@ function renderTablePanel() {
   wrap.querySelectorAll("[data-legacy-order]").forEach((b) => (b.onclick = () => legacyItemStatus(b.dataset.legacyOrder, b.dataset.legacyIdx, b.dataset.legacyStatus)));
   wrap.querySelectorAll("[data-accept]").forEach((b) => (b.onclick = () => acceptOrder(b.dataset.accept)));
   wrap.querySelectorAll("[data-serveall]").forEach((b) => (b.onclick = () => serveAllOrder(b.dataset.serveall)));
+  wrap.querySelectorAll("[data-serve-all-orders]").forEach((b) => (b.onclick = () => serveAllOrders(b.dataset.serveAllOrders)));
   wrap.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => setOrderPayment(b.dataset.pay, b.dataset.paid !== "1")));
   wrap.querySelectorAll("[data-call-attend]").forEach((b) => (b.onclick = () => attendCall(b.dataset.callAttend)));
   wrap.querySelectorAll("[data-attend-all]").forEach((b) => (b.onclick = () => attendTableCalls(b.dataset.attendAll)));
@@ -1547,8 +1618,13 @@ function renderTablePanel() {
 
 // Advance ONE dish in a legacy order (items stored in the order's JSON).
 async function legacyItemStatus(orderId, index, status) {
-  try { await api("POST", "/orders/" + orderId + "/item", { index: Number(index), status }); await loadSessions(); toast("Item → " + status, "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  try {
+    await api("POST", "/orders/" + orderId + "/item", { index: Number(index), status }); // persist now
+    const o = (state.data.orders || []).find((x) => x.id === orderId);                    // optimistic local update
+    if (o && Array.isArray(o.items) && o.items[index]) o.items[index].status = status;
+    renderTablePanel();                                                                   // instant redraw from local state
+    scheduleServeFlush();                                                                 // one real refresh after you stop clicking
+  } catch (e) { toast("Failed: " + e.message, "err"); }
 }
 
 // Accept a whole order (received -> preparing). After this, dishes are served one by one.
@@ -1561,10 +1637,20 @@ async function serveAllOrder(orderId) {
   try { await api("POST", "/orders/" + orderId + "/serve-all"); await loadSessions(); toast("All items served", "ok"); }
   catch (e) { toast("Failed: " + e.message, "err"); }
 }
-// Quick action: accept every new order on a table.
+// Quick action: accept new orders on a table. If there's only ONE new order,
+// accept it in one tap. If there are SEVERAL, don't bulk-accept — open the detail
+// panel so staff can accept each order separately.
 async function acceptTableOrders(t) {
   const recv = ordersForTable(t).filter((o) => o.status === "received");
+  if (recv.length > 1) { openTablePanel(t); return; } // multiple → accept each in the detail view
   try { for (const o of recv) await api("POST", "/orders/" + o.id + "/accept"); await loadSessions(); toast("Order accepted", "ok"); }
+  catch (e) { toast("Failed: " + e.message, "err"); }
+}
+// Serve EVERY order on a table at once (the table-wide "mark all served").
+async function serveAllOrders(t) {
+  const orders = ordersForTable(t);
+  if (!orders.length) return;
+  try { for (const o of orders) await api("POST", "/orders/" + o.id + "/serve-all"); await loadSessions(); toast("All orders served", "ok"); }
   catch (e) { toast("Failed: " + e.message, "err"); }
 }
 // Quick action: mark every open call on a table attended (clears the tile's emoji).
@@ -1579,8 +1665,11 @@ async function restartTable(t) {
   if (!ids.length) return;
   if (!(await confirmDialog(`Restart Table ${t}? Its orders clear off the floor and the table stays OPEN for a fresh round.`, "Restart"))) return;
   try {
-    for (const id of ids) await api("PATCH", "/orders/" + id, { archived: true });
-    (state.data.orders || []).forEach((o) => { if (ids.includes(o.id)) o.archived = true; });
+    // Mark each order SERVED + archived: the round is done, so the guest's order
+    // tracker finalizes (stops "Preparing" and clears) and the orders stay as real,
+    // completed orders in records/revenue — NOT cancelled, which would void them.
+    for (const id of ids) await api("PATCH", "/orders/" + id, { archived: true, status: "served" });
+    (state.data.orders || []).forEach((o) => { if (ids.includes(o.id)) { o.archived = true; o.status = "served"; } });
     // keep the table OPEN for the next round — open a fresh session if it doesn't have one
     if ((state.data.settings || {}).sessions_enabled && !openSessionForTable(t)) await api("POST", "/sessions/open", { table: String(t) });
     await loadSessions();
@@ -1704,6 +1793,7 @@ function setTab(tab) {
   const noList = tab === "general" || tab === "orders" || tab === "tables" || tab === "log";
   $("#newBtn").style.display = noList ? "none" : "";
   $("#search").style.display = noList ? "none" : "";
+  renderCatFilter(); // show category chips on Dishes, hide elsewhere
   renderList();
   renderEditor();
   if (tab === "orders") {
@@ -1801,8 +1891,14 @@ async function pollOrders() {
   const prevR = lastReqCount;
   lastReqCount = reqCount;
 
-  if (state.tab === "orders") renderEditor();
-  if (state.tab === "tables") loadSessions(true); // keep the live floor fresh
+  // While a serve flush is pending (staff is actively marking dishes), don't let
+  // the poll redraw the view under their fingers — the optimistic local render is
+  // already on screen and the debounced flush will reconcile it shortly. We still
+  // fetched fresh data above, so the new-order/call/request alerts below still fire.
+  if (!serveFlushPending()) {
+    if (state.tab === "orders") renderEditor();
+    if (state.tab === "tables") loadSessions(true); // keep the live floor fresh
+  }
 
   // new order alert
   if (prev !== null && orders.length > prev) {
@@ -1881,7 +1977,7 @@ setTab(state.tab);
 // If the very first load fails, show "connection failed" so it's obvious the local
 // server probably isn't running.
 loadAll()
-  .then(() => { renderList(); renderEditor(); startOrderWatch(); })
+  .then(() => { renderCatFilter(); renderList(); renderEditor(); startOrderWatch(); })
   .catch((e) => {
     $("#conn").textContent = "connection failed";
     $("#conn").className = "conn err";

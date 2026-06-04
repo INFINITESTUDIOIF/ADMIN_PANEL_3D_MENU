@@ -513,6 +513,15 @@ app.post("/api/:kind", wrap(async (req, res) => {
       req.body.geo_radius_m = Number.isFinite(n) ? Math.min(Math.max(n, 20), 5000) : 250;
     }
   }
+  // Items safety net: a dish needs an id (primary key) + slug (URL). If a brand-new
+  // dish arrives without them, derive both from the title so "add a dish" can never
+  // fail just because those weren't typed. Existing dishes already carry an id, so
+  // this only fills the gap for new ones.
+  if (req.params.kind === "items" && req.body && typeof req.body === "object") {
+    const slugify = (s) => String(s || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!req.body.slug && req.body.title) req.body.slug = slugify(req.body.title);
+    if (!req.body.id) req.body.id = req.body.slug || slugify(req.body.title);
+  }
   // "upsert" = insert if it's new, or update if a row with that key already
   // exists. onConflict tells Supabase which column decides "same row".
   const data = must(

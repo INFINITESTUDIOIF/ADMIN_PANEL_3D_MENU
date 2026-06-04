@@ -71,6 +71,28 @@ body {
 }
 .search:focus { outline: none; border-color: var(--gold); }
 
+/* Dishes-tab category chips: a horizontal, scrollable row that filters the list
+   to one category. Active chip is gold; the rest are quiet outlines. */
+.cat-filter {
+  display: flex; gap: 7px; padding: 10px 14px; border-bottom: 1px solid var(--line);
+  overflow-x: auto; scrollbar-width: thin; flex-wrap: nowrap;
+}
+.cat-filter::-webkit-scrollbar { height: 6px; }
+.cat-filter::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+.cat-chip {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel-2); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 6px 12px; font-size: 13px; font-weight: 600; white-space: nowrap;
+  cursor: pointer; transition: background .15s, color .15s, border-color .15s;
+}
+.cat-chip:hover { color: var(--text); border-color: color-mix(in srgb, var(--gold) 45%, var(--line)); }
+.cat-chip i { font-size: 12px; opacity: .85; }
+.cat-chip.active {
+  background: color-mix(in srgb, var(--gold) 18%, transparent);
+  color: var(--gold-strong); border-color: var(--gold);
+}
+
 .list { list-style: none; margin: 0; padding: 8px; overflow-y: auto; flex: 1; }
 .list-item {
   display: flex; align-items: center; gap: 12px;
@@ -212,7 +234,11 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .ord-items { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .ord-line { display: flex; justify-content: space-between; font-size: 14px; color: var(--text); }
 .ord-allergy { font-size: 13px; color: #fca5a5; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.35); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; }
-.ord-total { display: flex; justify-content: space-between; font-weight: 700; border-top: 1px solid var(--line); padding-top: 10px; }
+.ord-total { display: flex; justify-content: space-between; align-items: baseline; font-weight: 700; border-top: 1px solid var(--line); padding-top: 10px; }
+/* The amount itself reads large so the staff can see what a table owes from across
+   the board. Unpaid (and not cancelled) bills glow gold; paid ones stay calm. */
+.ord-total span:last-child { font-size: 1.5rem; font-weight: 800; letter-spacing: .2px; }
+.ord-card:not(.is-paid):not(.ord-cancelled) .ord-total span:last-child { color: var(--gold); }
 
 /* --- order board --- */
 .ord-note {
@@ -245,16 +271,20 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .pay-pill.paid { background: rgba(74,222,128,0.16); color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
 .pay-pill.voided { background: rgba(150,150,150,0.16); color: var(--muted); border: 1px solid rgba(150,150,150,0.35); }
 .ord-card.is-paid { opacity: 0.82; }
-.ord-btn.pay { background: linear-gradient(180deg, #4ade80, #2bb866); color: #06281a; }
+/* Premium, warm palette to match the floor — no neon. "Mark paid" is the gold
+   primary; "Serve" is a soft, deep emerald (reads as "done" without shouting);
+   the status/payment PILLS still carry the bright state colour. */
+.ord-btn.pay { background: var(--gold-grad, linear-gradient(180deg, #e8b884, #d4a574)); color: #2a1d0c; }
 .ord-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .ord-btn {
   flex: 1; min-width: 120px; padding: 10px 12px; border-radius: 10px;
   font-size: 13px; font-weight: 700; cursor: pointer; border: 1px solid transparent;
   transition: filter .15s, background .15s;
 }
-.ord-btn:hover { filter: brightness(1.08); }
+.ord-btn:hover { filter: brightness(1.06); }
 .ord-btn.accept { background: var(--gold); color: #2a1d0c; }
-.ord-btn.serve { background: #4ade80; color: #082a14; }
+.ord-btn.serve { background: linear-gradient(180deg, #3f9d6e, #2f7d56); color: #f1faf4; }
+.ord-top b { white-space: nowrap; } /* keep "Table 2" on one line — don't let pills squash it */
 .ord-btn.ghost { flex: 0 0 auto; min-width: 0; background: transparent; border-color: var(--line); color: var(--muted); }
 .ord-btn.ghost:hover { color: var(--text); }
 
@@ -540,6 +570,8 @@ body {
 /* floor tiles — outline AND fill tint vary per state via --c */
 /* fixed-size tiles: same size always, just MORE per row as the floor gets wider */
 .ftile-grid { display: grid; grid-template-columns: repeat(auto-fill, 162px); justify-content: start; gap: 14px; }
+/* The faint chair watermark on a free/off table — top-right, subtle, premium. */
+.ft-officon { position: absolute; top: 13px; right: 14px; font-size: 20px; color: var(--c); opacity: 0.3; pointer-events: none; }
 .ftile { --c: #6b6253; position: relative; text-align: left; cursor: pointer; min-height: 104px;
   display: flex; flex-direction: column; padding: 13px 14px; border-radius: 15px;
   border: 1.5px solid color-mix(in srgb, var(--c) 55%, var(--line));
