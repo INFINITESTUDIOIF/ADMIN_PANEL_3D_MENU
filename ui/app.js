@@ -718,128 +718,6 @@ function ordersHtml() {
   return head + current + freedSection;
 }
 
-// Live floor map: a tile per table, coloured by the status of that table's orders.
-// (This is the older orders-only floor; the unified floor further down is the
-// main one now.)
-function tablesHtml() {
-  const n = Math.max(1, parseInt((state.data.settings || {}).table_count, 10) || 12); // how many tables to draw
-  const orders = (state.data.orders || []).filter((o) => !o.archived);
-  // Group the orders by table number so we can look up "table 5's orders" quickly.
-  const byTable = {};
-  orders.forEach((o) => {
-    const t = (o.table_number || "").trim();
-    if (t) (byTable[t] = byTable[t] || []).push(o);
-  });
-  let tiles = "";
-  // Draw one tile for every table from 1 to n.
-  for (let i = 1; i <= n; i++) {
-    const os = byTable[String(i)] || []; // this table's orders
-    const isNew = os.some((o) => o.status === "received"); // a brand-new, unconfirmed order
-    const preparing = os.some((o) => o.status === "preparing");
-    const unpaid = os.some((o) => o.status !== "cancelled" && o.payment_status !== "paid");
-    // Pick the tile's colour + label. Order matters: a new order beats "preparing",
-    // which beats "bill due", which beats "cleared". No orders at all → Free.
-    let st, label;
-    if (isNew) { st = "new"; label = "New · not confirmed"; }
-    else if (preparing) { st = "active"; label = "In progress"; }
-    else if (unpaid) { st = "unpaid"; label = "Bill due"; }
-    else if (os.length) { st = "paid"; label = "Cleared"; }
-    else { st = "free"; label = "Free"; }
-    // How much this table still owes (shown on the tile).
-    const due = os.filter((o) => o.status !== "cancelled" && o.payment_status !== "paid")
-      .reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
-    tiles += `<button class="tbl tbl-${st}" data-table="${i}">
-      <div class="tbl-num">${i}</div>
-      <div class="tbl-state">${label}</div>
-      ${os.length ? `<div class="tbl-meta">${os.length} order${os.length > 1 ? "s" : ""}${due > 0 ? ` · ${due.toFixed(2)} due` : ""}</div>` : `<div class="tbl-meta">tap to view</div>`}
-    </button>`;
-  }
-  const head = `<div class="ed-head">
-      <h2>Tables <span class="sub">· live floor map</span></h2>
-      <button class="btn" id="refreshOrders">↻ Refresh</button>
-    </div>
-    <div class="tbl-legend">
-      <span class="lg free">Free</span>
-      <span class="lg new">New</span>
-      <span class="lg active">In progress</span>
-      <span class="lg unpaid">Bill due</span>
-      <span class="lg paid">Cleared</span>
-      <span class="tbl-hint">Set the number of tables in <b>General</b>.</span>
-    </div>`;
-  return head + `<div class="tbl-grid">${tiles}</div>`;
-}
-
-// ---- clickable table: a modal showing that table's orders + actions + Free ----
-function tableModalOrderRow(o) {
-  const meta = STATUS_META[o.status || "received"] || STATUS_META.received;
-  const paid = o.payment_status === "paid";
-  const items = (o.items || []).map((i) => `${esc(i.title)} ×${esc(i.qty)}`).join(", ");
-  let statusBtn = "";
-  if (o.status === "received") statusBtn = `<button class="ord-btn accept" data-act="preparing" data-id="${esc(o.id)}">✓ Prepare</button>`;
-  else if (o.status === "preparing") statusBtn = `<button class="ord-btn serve" data-act="served" data-id="${esc(o.id)}">🍽️ Serve</button>`;
-  return `<div class="tmo">
-    <div class="tmo-top">
-      <span class="ord-pill ${meta.cls}">${meta.label}</span>
-      <span class="pay-pill ${paid ? "paid" : "pending"}">${paid ? "💳 Paid" : "⏳ Unpaid"}</span>
-      <span class="tmo-total">${esc(o.total)}</span>
-    </div>
-    <div class="tmo-items">${items || "—"}</div>
-    <div class="tmo-actions">
-      ${statusBtn}
-      <button class="ord-btn ${paid ? "ghost" : "pay"}" data-pay="${esc(o.id)}" data-paid="${paid ? "1" : "0"}">${paid ? "↩ Mark unpaid" : "💳 Mark paid"}</button>
-    </div>
-  </div>`;
-}
-
-// openTableModal / closeTableModal: remember which table's pop-up is open (or
-// none), then (re)draw or remove it.
-function openTableModal(tableNum) { state.openTable = String(tableNum); renderTableModal(); }
-function closeTableModal() { state.openTable = null; document.querySelector(".tbl-modal-overlay")?.remove(); }
-
-// renderTableModal: draw the pop-up for the currently-open table — its orders,
-// the amount due, and a "Free this table" button (enabled only once everything's paid).
-function renderTableModal() {
-  if (state.openTable == null) return; // nothing open, nothing to draw
-  document.querySelector(".tbl-modal-overlay")?.remove();
-  const t = state.openTable;
-  const os = (state.data.orders || []).filter((o) => !o.archived && (o.table_number || "").trim() === t);
-  const due = os.filter((o) => o.status !== "cancelled" && o.payment_status !== "paid").reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
-  const canFree = os.length > 0 && os.every((o) => o.payment_status === "paid" || o.status === "cancelled");
-  const body = os.length ? os.map(tableModalOrderRow).join("") : `<div class="empty">No active orders on this table.</div>`;
-  const foot = os.length
-    ? `<div class="tbl-modal-due">${due > 0 ? `Due: <b>${due.toFixed(2)}</b>` : "All settled"}</div>
-       <button class="btn tbl-modal-free ${canFree ? "primary" : ""}" ${canFree ? "" : "disabled"}>${canFree ? "✓ Free this table" : "Settle the bill to free"}</button>`
-    : "";
-  const wrap = el(`<div class="tbl-modal-overlay">
-    <div class="tbl-modal">
-      <div class="tbl-modal-head"><h3>Table ${esc(t)}</h3><button class="tbl-modal-close" aria-label="Close">✕</button></div>
-      <div class="tbl-modal-body">${body}</div>
-      <div class="tbl-modal-foot">${foot}</div>
-    </div>
-  </div>`);
-  document.body.appendChild(wrap);
-  // Wire up the buttons now that the pop-up is on the page:
-  wrap.querySelector(".tbl-modal-close").onclick = closeTableModal; // the X
-  wrap.onclick = (e) => { if (e.target === wrap) closeTableModal(); }; // click the dark backdrop to close
-  wrap.querySelectorAll("[data-act]").forEach((b) => (b.onclick = () => tableAction(b.dataset.id, "status", b.dataset.act))); // advance status buttons
-  wrap.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => tableAction(b.dataset.pay, "pay", b.dataset.paid !== "1"))); // mark paid/unpaid
-  const free = wrap.querySelector(".tbl-modal-free");
-  if (free && canFree) free.onclick = () => freeTable(t);
-}
-
-// tableAction: from the table pop-up, change one order's status or payment, then
-// update our in-memory copy and re-draw — so the screen reacts instantly.
-async function tableAction(id, kind, val) {
-  try {
-    await api("PATCH", "/orders/" + id, kind === "status" ? { status: val } : { payment_status: val ? "paid" : "pending" });
-    const o = (state.data.orders || []).find((x) => x.id === id);
-    if (o) { if (kind === "status") o.status = val; else o.payment_status = val ? "paid" : "pending"; }
-    renderTableModal();
-    renderEditor();
-    toast("Updated", "ok");
-  } catch (e) { toast("Failed: " + e.message, "err"); }
-}
-
 // freeTable: clear a settled table off the floor by archiving all its orders
 // (they stay in the records, just hidden from the live view). Asks first.
 async function freeTable(t) {
@@ -849,7 +727,6 @@ async function freeTable(t) {
   try {
     for (const id of ids) await api("PATCH", "/orders/" + id, { archived: true });
     (state.data.orders || []).forEach((o) => { if (ids.includes(o.id)) o.archived = true; });
-    closeTableModal();
     renderEditor();
     toast(`Table ${t} freed`, "ok");
   } catch (e) { toast("Could not free: " + e.message, "err"); }
@@ -1191,7 +1068,9 @@ async function save() {
 // removeRecord: permanently delete the currently-selected dish/category/filter.
 async function removeRecord() {
   const it = state.sel;
-  if (!confirm(`Delete "${recLabel(it)}"? This can't be undone.`)) return;
+  // Use the app's own styled confirm dialog (every other delete does), not the
+  // browser's plain native popup — keeps the look consistent.
+  if (!(await confirmDialog(`Delete "${recLabel(it)}"? This can't be undone.`, "Delete"))) return;
   try {
     await api("DELETE", "/" + state.tab + "/" + encodeURIComponent(recKey(it)));
     toast("Deleted", "ok");
@@ -1221,10 +1100,6 @@ function timeAgo(ts) {
 
 // Fetch the whole board in one call. `fromPoll` = silent (no error toast, and don't
 // stomp the editor while the owner is typing in an input).
-function effTableView() {
-  // Which view the Tables tab shows: the user's explicit pick, else the mode default.
-  return state.tablesView || ((state.data.settings || {}).sessions_enabled ? "sessions" : "orders");
-}
 let lastBoardSig = ""; // last rendered board fingerprint — skip needless re-renders on poll
 // loadSessions: fetch (or reuse) the live tables board and redraw the floor. The
 // `fromPoll` flag means "this was the automatic 1-second refresh", so we stay quiet
@@ -1258,202 +1133,6 @@ async function loadSessions(fromPoll) {
   const typing = document.activeElement && ed.contains(document.activeElement) && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
   if (!fromPoll || !typing) renderEditor();
   renderTablePanel(); // refresh the open table panel, if any
-}
-
-// sessionsHtml: the older "dining sessions" board (requests queue + floor map +
-// blocklist). The unified floor further down replaces this for day-to-day use,
-// but the building blocks here are still used.
-function sessionsHtml() {
-  const settings = state.data.settings || {};
-  const enabled = !!settings.sessions_enabled;
-  const n = Math.max(1, parseInt(settings.table_count, 10) || 12);
-  const sessions = state.board.sessions || [];
-  const reqs = state.board.requests || [];
-  const blocks = state.board.blocklist || [];
-  const calls = (state.data.calls || []).filter((c) => !c.resolved);
-
-  const head = `<div class="ed-head">
-      <h2>Tables <span class="sub">· live dining sessions</span></h2>
-      <button class="btn" id="refreshSessions">↻ Refresh</button>
-    </div>`;
-  const offNote = enabled ? "" :
-    `<div class="ord-note">💤 Dining sessions are currently <b>OFF</b> — guests order the normal way. Turn them on in <b>General</b> when you're ready; this board goes live then.</div>`;
-
-  // ── pending requests queue ──
-  const reqRows = reqs.map((r) => {
-    const who = esc(r.name || r.phone || "Someone");
-    const what = r.type === "open" ? `wants to <b>open table ${esc(r.table_number)}</b>`
-      : r.type === "join" ? `wants to <b>join table ${esc(r.table_number)}</b>`
-      : `needs <b>access to table ${esc(r.table_number)}</b>`;
-    return `<div class="sx-req">
-        <div class="sx-req-info"><span class="sx-tag sx-tag-${esc(r.type)}">${esc(r.type)}</span> ${who} ${what}<small>${esc(timeAgo(r.created_at))}</small></div>
-        <div class="sx-req-actions">
-          <button class="btn small" data-req-deny="${esc(r.id)}">Dismiss</button>
-          <button class="btn small primary" data-req-approve="${esc(r.id)}">${r.type === "open" ? "Open table" : "Approve"}</button>
-        </div>
-      </div>`;
-  }).join("");
-  const reqPanel = `<div class="sx-panel">
-      <h3>📨 Requests <span class="sub">· ${reqs.length}</span></h3>
-      ${reqs.length ? reqRows : `<div class="sx-empty">No pending requests.</div>`}
-    </div>`;
-
-  // ── floor map (reuses the .tbl tile styles) ──
-  let tiles = "";
-  for (let i = 1; i <= n; i++) {
-    const s = sessions.find((x) => String(x.table_number) === String(i) && x.status === "open"); // this table's open session, if any
-    let st = "free", label = "Free", meta = "tap to open", badges = "";
-    if (s) {
-      const mem = membersOf(s.id); // guests at this table
-      const pending = mem.filter((m) => !m.approved).length; // guests waiting to be let in
-      const its = itemsOf(s.id); // items ordered in this session
-      const anyUnserved = its.some((it) => it.status !== "served");
-      const called = calls.some((c) => String(c.table_number) === String(i)); // is the waiter being called?
-      // Decide the tile's colour/label from what's happening at the table.
-      if (!mem.length) { st = "active"; label = "Open"; meta = "waiting for guests"; }
-      else if (its.length && anyUnserved) { st = "active"; label = "Preparing"; meta = `${its.length} item${its.length > 1 ? "s" : ""}`; }
-      else if (its.length) { st = "unpaid"; label = "All served"; meta = `${its.length} item${its.length > 1 ? "s" : ""}`; }
-      else { st = "active"; label = `Seated · ${mem.length}`; meta = "no orders yet"; }
-      if (pending) { st = "new"; badges += `<span class="sx-badge">🙋 ${pending}</span>`; }
-      if (called) badges += `<span class="sx-badge sx-badge-call">🔔</span>`;
-    }
-    tiles += `<button class="tbl tbl-${st}" data-sess-table="${i}">
-        <div class="tbl-num">${i}</div>
-        <div class="tbl-state">${esc(label)}</div>
-        <div class="tbl-meta">${esc(meta)}</div>
-        ${badges ? `<div class="sx-badges">${badges}</div>` : ""}
-      </button>`;
-  }
-  const floor = `<div class="tbl-legend">
-      <span class="lg free">Free</span>
-      <span class="lg new">Waiting to join</span>
-      <span class="lg active">Seated / preparing</span>
-      <span class="lg unpaid">All served</span>
-      <span class="tbl-hint">Tap a table to manage its session.</span>
-    </div>
-    <div class="tbl-grid">${tiles}</div>`;
-
-  // ── blocklist ──
-  const blkRows = blocks.map((b) => `<div class="sx-blk">
-      <span>${b.phone ? "📵 " + esc(b.phone) : "🚫 table " + esc(b.table_number)}${b.reason ? ` — <small>${esc(b.reason)}</small>` : ""}</span>
-      <button class="btn small" data-unblock="${esc(b.id)}">Unblock</button>
-    </div>`).join("");
-  const blkPanel = `<div class="sx-panel">
-      <h3>🚫 Blocked <span class="sub">· ${blocks.length}</span></h3>
-      ${blocks.length ? blkRows : `<div class="sx-empty">Nobody is blocked.</div>`}
-      <div class="sx-blk-add">
-        <input class="sx-input" id="blkPhone" placeholder="Phone to block" />
-        <input class="sx-input sx-input-sm" id="blkTable" placeholder="or table #" />
-        <button class="btn small" id="blkAdd">Block</button>
-      </div>
-    </div>`;
-
-  return head + offNote + reqPanel + floor + blkPanel;
-}
-
-// bindSessions: wire up the older sessions board's buttons (refresh, open a table,
-// approve/deny requests, unblock, add to blocklist).
-function bindSessions() {
-  const ed = $("#editor");
-  const rb = document.getElementById("refreshSessions");
-  if (rb) rb.onclick = () => loadSessions();
-  ed.querySelectorAll("[data-sess-table]").forEach((t) => (t.onclick = () => openSessionModal(t.dataset.sessTable)));
-  ed.querySelectorAll("[data-req-approve]").forEach((b) => (b.onclick = () => resolveRequest(b.dataset.reqApprove, "approved")));
-  ed.querySelectorAll("[data-req-deny]").forEach((b) => (b.onclick = () => resolveRequest(b.dataset.reqDeny, "denied")));
-  ed.querySelectorAll("[data-unblock]").forEach((b) => (b.onclick = () => unblock(b.dataset.unblock)));
-  const add = document.getElementById("blkAdd");
-  if (add) add.onclick = () => {
-    const phone = (document.getElementById("blkPhone").value || "").trim();
-    const table = (document.getElementById("blkTable").value || "").trim();
-    if (!phone && !table) { toast("Enter a phone or table to block", "err"); return; }
-    block({ phone: phone || undefined, table: table || undefined });
-  };
-}
-
-// ---- per-table session modal (reuses .tbl-modal styling) ----
-// open/closeSessionModal: remember which table's session pop-up is showing.
-function openSessionModal(table) { state.openSess = String(table); renderSessionModal(); }
-function closeSessionModal() { state.openSess = null; document.querySelector(".sx-modal-overlay")?.remove(); }
-
-// renderSessionModal: draw a single table's session pop-up — its guests (approve/
-// deny/block), any waiter calls, the ordered items with their next-step buttons,
-// and the running bill total.
-function renderSessionModal() {
-  if (state.openSess == null) return;
-  document.querySelector(".sx-modal-overlay")?.remove();
-  const t = state.openSess;
-  const s = (state.board.sessions || []).find((x) => String(x.table_number) === String(t) && x.status === "open");
-  const calls = (state.data.calls || []).filter((c) => !c.resolved && String(c.table_number) === String(t));
-
-  let body, foot;
-  if (!s) {
-    body = `<div class="sx-empty">No open session on table ${esc(t)}. Open it when guests are seated, or approve their request from the queue.</div>`;
-    foot = `<button class="btn primary" id="sxOpen">Open this table</button>`;
-  } else {
-    const mem = membersOf(s.id);
-    const its = itemsOf(s.id);
-    const total = its.reduce((a, it) => a + (parseFloat(it.unit_price) || 0) * (parseInt(it.qty, 10) || 1), 0);
-
-    const memRows = mem.map((m) => {
-      const owner = m.role === "owner";
-      const status = m.approved ? `<span class="sx-ok">approved</span>` : `<span class="sx-wait">waiting</span>`;
-      const acts = !m.approved
-        ? `<button class="btn small" data-mem-deny="${esc(m.id)}">Deny</button><button class="btn small primary" data-mem-approve="${esc(m.id)}">Approve</button>`
-        : (owner ? `<span class="sx-tag">owner</span>` : `<button class="btn small" data-mem-remove="${esc(m.id)}">Remove</button>`);
-      const blockBtn = m.phone ? `<button class="btn small danger" data-mem-block="${esc(m.phone)}">Block</button>` : "";
-      return `<div class="sx-mem">
-          <div class="sx-mem-info">${owner ? "👑 " : ""}<b>${esc(m.name || "Guest")}</b> ${status}${m.phone_verified ? ` <span class="sx-ok">📱</span>` : ""}</div>
-          <div class="sx-mem-acts">${acts}${blockBtn}</div>
-        </div>`;
-    }).join("");
-
-    const itemRows = its.length ? its.map((it) => {
-      let btn = "";
-      if (it.status === "received") btn = `<button class="btn small primary" data-item-next="${esc(it.id)}" data-item-status="preparing">✓ Prepare</button>`;
-      else if (it.status === "preparing") btn = `<button class="btn small primary" data-item-next="${esc(it.id)}" data-item-status="served">🍽️ Serve</button>`;
-      return `<div class="sx-item">
-          <div class="sx-item-info"><span class="ord-pill ${esc(it.status)}">${esc(it.status)}</span> ${esc(it.title)} ×${esc(it.qty)}</div>
-          <div>${btn}</div>
-        </div>`;
-    }).join("") : `<div class="sx-empty">No items ordered yet.</div>`;
-
-    const callRows = calls.map((c) => `<div class="sx-call">🔔 ${esc(c.note || "Waiter call")} <button class="btn small primary" data-call-attend="${esc(c.id)}">Attended</button></div>`).join("");
-
-    body = `
-      <div class="sx-sec">
-        <div class="sx-sec-h">Guests <span class="sub">· ${mem.length}</span>
-          <label class="sx-auto"><input type="checkbox" id="sxAuto" ${s.auto_approve ? "checked" : ""}> auto-approve joiners</label>
-        </div>
-        ${memRows || `<div class="sx-empty">No one has joined yet.</div>`}
-      </div>
-      ${calls.length ? `<div class="sx-sec"><div class="sx-sec-h">Calls</div>${callRows}</div>` : ""}
-      <div class="sx-sec">
-        <div class="sx-sec-h">Bill <span class="sub">· ${its.length} item${its.length !== 1 ? "s" : ""}</span></div>
-        ${itemRows}
-        <div class="sx-total">Total <b>${total.toFixed(2)}</b></div>
-      </div>`;
-    foot = `<button class="btn danger" id="sxClose">Close session</button>`;
-  }
-
-  const wrap = el(`<div class="sx-modal-overlay tbl-modal-overlay">
-      <div class="tbl-modal sx-modal">
-        <div class="tbl-modal-head"><h3>Table ${esc(t)}${s ? ` <span class="sx-live">● open</span>` : ""}</h3><button class="tbl-modal-close" aria-label="Close">✕</button></div>
-        <div class="tbl-modal-body">${body}</div>
-        <div class="tbl-modal-foot">${foot}</div>
-      </div>
-    </div>`);
-  document.body.appendChild(wrap);
-  wrap.querySelector(".tbl-modal-close").onclick = closeSessionModal;
-  wrap.onclick = (e) => { if (e.target === wrap) closeSessionModal(); };
-  const openBtn = wrap.querySelector("#sxOpen"); if (openBtn) openBtn.onclick = () => openTableSession(t);
-  const closeBtn = wrap.querySelector("#sxClose"); if (closeBtn && s) closeBtn.onclick = () => closeSession(s.id);
-  const auto = wrap.querySelector("#sxAuto"); if (auto && s) auto.onchange = () => setSessAutoApprove(s.id, auto.checked);
-  wrap.querySelectorAll("[data-mem-approve]").forEach((b) => (b.onclick = () => memberAction(b.dataset.memApprove, "approve")));
-  wrap.querySelectorAll("[data-mem-deny]").forEach((b) => (b.onclick = () => memberAction(b.dataset.memDeny, "remove")));
-  wrap.querySelectorAll("[data-mem-remove]").forEach((b) => (b.onclick = () => memberAction(b.dataset.memRemove, "remove")));
-  wrap.querySelectorAll("[data-mem-block]").forEach((b) => (b.onclick = () => block({ phone: b.dataset.memBlock })));
-  wrap.querySelectorAll("[data-item-next]").forEach((b) => (b.onclick = () => itemStatus(b.dataset.itemNext, b.dataset.itemStatus)));
-  wrap.querySelectorAll("[data-call-attend]").forEach((b) => (b.onclick = () => attendCall(b.dataset.callAttend)));
 }
 
 // ---- session staff actions ----
@@ -1591,7 +1270,9 @@ function tableTileState(t) {
     meta = items.length ? `${served}/${items.length} served${due > 0 ? ` · ${due.toFixed(2)} due` : ""}` : `${os.length} order${os.length > 1 ? "s" : ""}`;
   } else if (sess) {
     st = "seated"; label = mem.length ? `Seated · ${mem.length}` : "Open";
-    meta = cartCount ? `building · ${cartCount} item${cartCount > 1 ? "s" : ""}` : (mem.length ? "no orders yet" : "waiting for guests");
+    // The building cart is intentionally NOT shown on the tile — staff see it only
+    // when they open the table panel. So the tile just shows the seated state.
+    meta = mem.length ? "no orders yet" : "waiting for guests";
   } else if (reqs.length) {
     // free table, but a guest is asking to be let in -> make it shout for attention
     st = "req"; label = "Wants in";
@@ -1600,8 +1281,10 @@ function tableTileState(t) {
   let badges = "";
   if (reqs.length) badges += `<span class="ftb req">📨${reqs.length}</span>`;
   if (pending) badges += `<span class="ftb join">🙋${pending}</span>`;
-  if (cartCount) badges += `<span class="ftb cart">🛒${cartCount}</span>`;
+  // One emoji per ACTIVE waiter call (water 💧, napkins 🧻, clean 🧹…), up to 3,
+  // then a "+N" pill if there are more. The cart is deliberately NOT badged here.
   calls.slice(0, 3).forEach((c) => { badges += `<span class="ftb call">${callEmoji(c.note)}</span>`; });
+  if (calls.length > 3) badges += `<span class="ftb call ftb-more">+${calls.length - 3}</span>`;
   return {
     st, label, meta, badges,
     pay: os.length ? (unpaid ? "red" : "green") : "", // outline = payment: red unpaid / green paid
@@ -1663,10 +1346,18 @@ function floorHtml() {
     return `<div class="sx-req"><div class="sx-req-info"><span class="sx-tag sx-tag-${esc(r.type)}">${esc(r.type)}</span> ${who} · ${what}<small>${esc(timeAgo(r.created_at))}</small></div><div class="sx-req-actions"><button class="btn small" data-req-deny="${esc(r.id)}">✕</button><button class="btn small primary" data-req-approve="${esc(r.id)}">${r.type === "open" ? "Open" : "OK"}</button></div></div>`;
   }).join("") : `<div class="sx-empty">No pending requests.</div>`}</div>` : "";
 
+  // Active waiter calls across all OPEN tables (water/napkin/clean…), one row each.
+  // This stays in sync with the tile emojis — both read state.data.calls and refresh
+  // on the same 1s poll, and "Done" here resolves the same call the tile shows.
+  const liveCalls = (state.data.calls || []).filter((c) => !c.resolved && openSessionForTable((c.table_number || "").trim()));
+  const needsCard = sessionsOn ? `<div class="fc-card"><h3>Needs <span class="sub">· ${liveCalls.length}</span></h3>${liveCalls.length ? liveCalls.map((c) =>
+    `<div class="sx-req"><div class="sx-req-info">${callEmoji(c.note)} T${esc(c.table_number)} · ${esc(c.note || "Waiter")}<small>${esc(timeAgo(c.created_at))}</small></div><div class="sx-req-actions"><button class="btn small primary" data-call-attend="${esc(c.id)}">Done</button></div></div>`
+  ).join("") : `<div class="sx-empty">No active calls.</div>`}</div>` : "";
+
   const blkCard = sessionsOn ? `<div class="fc-card"><h3>Blocked <span class="sub">· ${blocks.length}</span></h3>${blocks.length ? blocks.map((b) => `<div class="sx-blk"><span>${b.phone ? "📵 " + esc(b.phone) : "🚫 T" + esc(b.table_number)}</span><button class="btn small" data-unblock="${esc(b.id)}">Unblock</button></div>`).join("") : `<div class="sx-empty">Nobody blocked.</div>`}<div class="sx-blk-add"><input class="sx-input" id="blkPhone" placeholder="Phone/email"/><input class="sx-input sx-input-sm" id="blkTable" placeholder="T#"/><button class="btn small" id="blkAdd">Block</button></div></div>` : "";
 
   const sideW = state.floorSideW || 300;
-  return `<div class="floor-wrap">${main}<div class="floor-resizer" id="floorResizer" title="Drag to resize"></div><aside class="floor-side" style="width:${sideW}px;flex:0 0 ${sideW}px">${controls}${reqCard}${blkCard}</aside></div>`;
+  return `<div class="floor-wrap">${main}<div class="floor-resizer" id="floorResizer" title="Drag to resize"></div><aside class="floor-side" style="width:${sideW}px;flex:0 0 ${sideW}px">${controls}${reqCard}${needsCard}${blkCard}</aside></div>`;
 }
 
 // bindFloor: wire up the unified floor after it's drawn — clicking a tile opens
@@ -1686,6 +1377,8 @@ function bindFloor() {
   ed.querySelectorAll("[data-req-approve]").forEach((b) => (b.onclick = () => resolveRequest(b.dataset.reqApprove, "approved")));
   ed.querySelectorAll("[data-req-deny]").forEach((b) => (b.onclick = () => resolveRequest(b.dataset.reqDeny, "denied")));
   ed.querySelectorAll("[data-unblock]").forEach((b) => (b.onclick = () => unblock(b.dataset.unblock)));
+  // The "Needs" card's Done buttons resolve a single waiter call (in sync with the tiles).
+  ed.querySelectorAll("[data-call-attend]").forEach((b) => (b.onclick = () => attendCall(b.dataset.callAttend)));
   ed.querySelectorAll("[data-setting]").forEach((c) => (c.onchange = () => saveSetting(c.dataset.setting, c.checked)));
   const sg = document.getElementById("fcSaveGeo"); if (sg) sg.onclick = saveGeo;
   const add = document.getElementById("blkAdd");
@@ -1823,7 +1516,9 @@ function renderTablePanel() {
     ordersSec = `<div class="sx-sec"><div class="sx-sec-h">Orders <span class="sub">· ${os.length}</span></div>${orderBlocks}</div>`;
   }
 
-  const callsSec = calls.length ? `<div class="sx-sec"><div class="sx-sec-h">Calls</div>${calls.map((c) => `<div class="sx-call">${callEmoji(c.note)} ${esc(c.note || "Waiter call")} <button class="btn small primary" data-call-attend="${esc(c.id)}">Attended</button></div>`).join("")}</div>` : "";
+  // Each active call (water, napkins, clean…) gets its own "Done" button so staff
+  // can clear them one at a time; if there are several, an "Attend all" clears them together.
+  const callsSec = calls.length ? `<div class="sx-sec"><div class="sx-sec-h">Calls <span class="sub">· ${calls.length}</span></div>${calls.map((c) => `<div class="sx-call">${callEmoji(c.note)} ${esc(c.note || "Waiter call")} <button class="btn small primary" data-call-attend="${esc(c.id)}">Done</button></div>`).join("")}${calls.length > 1 ? `<button class="btn small" data-attend-all="${esc(t)}">✓ Attend all (${calls.length})</button>` : ""}</div>` : "";
   const billSec = os.length ? `<div class="sx-sec"><div class="sx-sec-h">Bill</div><div class="sx-total">${due > 0 ? `Due <b>${due.toFixed(2)}</b> · ` : ""}Total <b>${billTotal.toFixed(2)}</b></div></div>` : "";
   const foot = `${os.length ? `<button class="btn" data-tp-restart="${esc(t)}">↻ Restart</button>` : ""}${sess ? `<button class="btn danger" id="sxClose">⏻ Turn table off</button>` : ""}<button class="btn ${canFree ? "primary" : ""} tp-free" ${canFree ? "" : "disabled"}>${canFree ? "✓ Free table" : "Settle bill to free"}</button>`;
 
@@ -1846,6 +1541,7 @@ function renderTablePanel() {
   wrap.querySelectorAll("[data-serveall]").forEach((b) => (b.onclick = () => serveAllOrder(b.dataset.serveall)));
   wrap.querySelectorAll("[data-pay]").forEach((b) => (b.onclick = () => setOrderPayment(b.dataset.pay, b.dataset.paid !== "1")));
   wrap.querySelectorAll("[data-call-attend]").forEach((b) => (b.onclick = () => attendCall(b.dataset.callAttend)));
+  wrap.querySelectorAll("[data-attend-all]").forEach((b) => (b.onclick = () => attendTableCalls(b.dataset.attendAll)));
   const free = wrap.querySelector(".tp-free"); if (free && canFree) free.onclick = () => freeTableAll(t, sess);
 }
 
@@ -2174,11 +1870,18 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// THE STARTING POINT: load all the data, then open the saved tab and begin the
-// live polling. If the very first load fails, show "connection failed" so it's
-// obvious the local server probably isn't running.
+// THE STARTING POINT.
+// First, open the saved tab IMMEDIATELY — before any data has loaded. This is what
+// stops the old "refresh flashes Dishes, then jumps to your real tab" bug: setTab
+// used to run only after loadAll() finished, so you stared at the default tab for
+// the whole network round-trip. Now the correct tab is shown right away (empty for
+// a moment), and the data fills into it when it arrives.
+setTab(state.tab);
+// Then load all the data, refresh the current view in place, and start live polling.
+// If the very first load fails, show "connection failed" so it's obvious the local
+// server probably isn't running.
 loadAll()
-  .then(() => { setTab(state.tab); startOrderWatch(); })
+  .then(() => { renderList(); renderEditor(); startOrderWatch(); })
   .catch((e) => {
     $("#conn").textContent = "connection failed";
     $("#conn").className = "conn err";

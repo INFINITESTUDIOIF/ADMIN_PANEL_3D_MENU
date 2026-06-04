@@ -561,6 +561,7 @@ body {
 .ft-badges { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .ftb { font-size: 12px; background: rgba(0,0,0,0.42); border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; line-height: 1.4; }
 .ftb.call { animation: tblPulse 1.2s ease-in-out infinite; }
+.ftb.ftb-more { animation: none; background: rgba(0,0,0,0.42); color: var(--muted); } /* the "+N" overflow pill — quiet, doesn't pulse */
 .ftb.req { background: color-mix(in srgb, #e7b75a 24%, rgba(0,0,0,0.42)); border-color: rgba(231,183,90,0.55); color: #f1d49b; animation: tblPulse 1.3s ease-in-out infinite; }
 .ftb.cart { background: rgba(96,165,250,0.18); border-color: rgba(96,165,250,0.45); color: #9cc4fb; } /* table is building a cart */
 .ft-label { margin-top: auto; padding-top: 10px; font-weight: 700; font-size: 13.5px; color: color-mix(in srgb, var(--c) 72%, var(--text)); }
@@ -752,8 +753,58 @@ body { background: radial-gradient(1100px 560px at 78% -12%, #1d160f 0%, var(--b
   /* floor tiles: two even columns instead of a fixed 162px width */
   .ftile-grid { grid-template-columns: 1fr 1fr; }
 
+  /* customization-option rows: the fixed 120px price column won't fit — stack them */
+  .opt-choice { grid-template-columns: 1fr; }
+  .opt-choice .btn.small.danger { height: auto; }
+
   /* log: the 7-column table can't fit — drop the header and let cells wrap in 2s */
   .logrow.loghead { display: none; }
   .logrow { grid-template-columns: 1fr 1fr; }
   .logacts { justify-content: flex-start; }
+}
+
+/* ============================ POLISH & OVERFLOW SAFETY ============================
+   Added after a full audit of every panel. Two jobs, applied at ALL widths:
+
+   (A) OVERFLOW SAFETY — several flex rows packed inputs/buttons side by side with
+       no permission to wrap or shrink, so on narrow cards the content spilled past
+       the rounded edge and got cropped (most visibly the "Blocked" add-row, where
+       a second input + Block button ran off the card). Letting these rows wrap, and
+       letting flex inputs shrink (min-width:0), fixes it. Wrapping only kicks in
+       when there isn't room, so desktop layouts are unchanged.
+
+   (B) HOVER POLISH — subtle, premium, and crucially NOT clipped. Anything living
+       inside a scrolling container (the list, the editor) uses glow/colour on hover
+       instead of movement, because a transform that nudges an element gets shaved by
+       the container's clipping edge. Plus a consistent keyboard focus ring, and full
+       respect for "reduce motion". */
+
+/* (A) let cramped rows wrap instead of cropping; let inputs shrink */
+.sx-blk-add, .sx-req, .sx-sec-h, .tp-order-top, .call-row,
+.sx-mem, .sx-item, .sx-call { flex-wrap: wrap; }
+.sx-input { min-width: 0; }                       /* shrink to fit the card, don't overflow it */
+.memb-cat { overflow: hidden; text-overflow: ellipsis; min-width: 0; } /* long category names get an ellipsis */
+
+/* (B) hover polish — glow, not movement, on scroll-container children (no cropping) */
+.list-item { transition: background .15s, border-color .15s, box-shadow .15s; }
+.list-item:hover {
+  transform: none;                                /* was translateX(2px) — clipped by the scrolling list */
+  background: var(--panel);
+  border-color: color-mix(in srgb, var(--gold) 30%, var(--line));
+  box-shadow: var(--shadow-sm);
+}
+.card:hover { box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold) 22%, transparent), var(--shadow-md); }
+.ftile:hover { box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent), var(--shadow-md); }
+.btn:hover { box-shadow: 0 6px 16px rgba(212,165,116,0.22); } /* keeps the tiny lift from .btn:hover above */
+
+/* a clear, consistent gold focus ring for keyboard users */
+:where(.btn, .tab, .tvt, .list-item, input, select, textarea):focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--gold) 70%, transparent);
+  outline-offset: 2px;
+}
+
+/* honour users who ask their OS for reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+  .btn:hover, .ftile:hover, .list-item:hover, .card:hover { transform: none !important; }
 }
