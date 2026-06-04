@@ -363,13 +363,28 @@ app.post("/api/members/:id/remove", wrap(async (req, res) => {
 }));
 
 // Advance one item's kitchen status (received -> preparing -> served).
+// IMPORTANT: after updating the item, we recompute the PARENT order's overall
+// status from all of its item rows and write it back to orders.status. The guest's
+// order tracker reads orders.status (via getOrderStatus), so without this the guest
+// would keep seeing "Preparing" even after every item was served.
 app.post("/api/items/:id/status", wrap(async (req, res) => {
   const status = req.body && req.body.status;
   if (!["received", "preparing", "served"].includes(status)) return res.status(400).json({ error: "invalid status" });
   const patch = { status };
   if (status === "served") patch.served_at = nowIso();
-  const row = must(await supabase.from("order_items").update(patch).eq("id", req.params.id).select());
-  res.json(row[0] || null);
+  const updated = must(await supabase.from("order_items").update(patch).eq("id", req.params.id).select());
+  const item = updated[0];
+  // Roll the change up to the parent order so the guest sees the right status.
+  if (item && item.order_id) {
+    const rows = must(await supabase.from("order_items").select("status").eq("order_id", item.order_id));
+    const total = rows.length;
+    const served = rows.filter((r) => r.status === "served").length;
+    const anyActive = rows.some((r) => r.status === "preparing" || r.status === "served");
+    // all items served -> order served; any started -> preparing; otherwise received.
+    const orderStatus = total > 0 && served === total ? "served" : anyActive ? "preparing" : "received";
+    await supabase.from("orders").update({ status: orderStatus }).eq("id", item.order_id);
+  }
+  res.json(item || null);
 }));
 
 // Accept a WHOLE order: jump it straight to "preparing" (single accept+prepare step).
