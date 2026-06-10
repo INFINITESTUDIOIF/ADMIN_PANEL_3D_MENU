@@ -64,11 +64,16 @@ body {
 .sidebar { position: relative; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .sidebar-resizer { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 6; transition: background .15s; }
 .sidebar-resizer:hover { background: color-mix(in srgb, var(--gold) 45%, transparent); }
-.sidebar-head { display: flex; gap: 8px; padding: 14px; border-bottom: 1px solid var(--line); }
+/* align-items center keeps the button vertically tidy next to the search box. */
+.sidebar-head { display: flex; align-items: center; gap: 8px; padding: 14px; border-bottom: 1px solid var(--line); }
 .search {
-  flex: 1; background: var(--panel-2); border: 1px solid var(--line);
+  flex: 1; min-width: 0; /* min-width lets the search shrink instead of shoving the button out */
+  background: var(--panel-2); border: 1px solid var(--line);
   color: var(--text); border-radius: 8px; padding: 9px 12px; font-size: 14px;
 }
+/* The "+ New" button must never be squeezed: no shrinking (which wrapped it
+   onto two lines and pushed it out of its row) and no text wrapping, ever. */
+.sidebar-head .btn { flex: 0 0 auto; }
 .search:focus { outline: none; border-color: var(--gold); }
 
 /* Dishes-tab category chips: a horizontal, scrollable row that filters the list
@@ -209,6 +214,7 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .btn {
   border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
   padding: 9px 16px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: .15s;
+  white-space: nowrap; /* button labels never wrap onto two lines */
 }
 .btn:hover { border-color: var(--gold); }
 .btn.primary { background: var(--gold); color: #2a1d0c; border-color: var(--gold); }

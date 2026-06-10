@@ -54,6 +54,13 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 // their harmless codes so a dish name with a "<" can't break or hijack the page.
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// inr: show a stored USD amount as Indian rupees, rounded to whole ₹.
+// Orders store totals in USD (the menu's source-of-truth currency); the owner
+// wants the editor to read in ₹ (2026-06-10). The rate mirrors CURRENCIES in
+// the menu app's lib/format.ts — update both together when rates move.
+const INR_RATE = 84;
+const inr = (usd) => "₹" + Math.round((parseFloat(usd) || 0) * INR_RATE).toLocaleString("en-US");
 // el: turn a string of HTML into a real, clickable page element we can insert.
 const el = (html) => {
   const t = document.createElement("template");
@@ -661,7 +668,7 @@ function orderCardHtml(o, freed = false) {
       ${tnum && paid
         ? (tableSettled
             ? `<button class="ord-btn free-table" data-free-table="${esc(tnum)}">🪑 Free table ${esc(tnum)}</button>`
-            : `<button class="ord-btn free-table" disabled title="Settle the rest of this table first">🪑 ${tableDue.toFixed(2)} still due</button>`)
+            : `<button class="ord-btn free-table" disabled title="Settle the rest of this table first">🪑 ${inr(tableDue)} still due</button>`)
         : ""}`;
   return `<div class="card ord-card ord-${meta.cls} ${paid ? "is-paid" : ""} ${freed ? "is-freed" : ""}">
     <div class="ord-top">
@@ -677,7 +684,7 @@ function orderCardHtml(o, freed = false) {
     <small class="ord-when">${esc(when)}</small>
     <div class="ord-items">${items}</div>
     ${allergy}
-    <div class="ord-total"><span>Total</span><span>${esc(o.total)}</span></div>
+    <div class="ord-total"><span>Total</span><span>${inr(o.total)}</span></div>
     <div class="ord-actions">${actionsRow}</div>
   </div>`;
 }
@@ -724,7 +731,7 @@ function ordersHtml() {
       <button class="btn" id="refreshOrders">↻ Refresh</button>
     </div>
     ${callsHtml()}
-    <div class="ord-note">⏳ <b>Pending bills:</b> ${unpaid.length} order${unpaid.length !== 1 ? "s" : ""} · ${pendingTotal.toFixed(2)} unpaid — mark each "Paid" once the guest settles up.</div>`;
+    <div class="ord-note">⏳ <b>Pending bills:</b> ${unpaid.length} order${unpaid.length !== 1 ? "s" : ""} · ${inr(pendingTotal)} unpaid — mark each "Paid" once the guest settles up.</div>`;
   if (!orders.length && !freed.length) return head + `<div class="empty">No orders yet. Orders placed from the menu show up here.</div>`;
   const bulk = `<div class="ord-bulk">
       <label class="ord-check"><input type="checkbox" id="ordSelectAll"> Select all</label>
@@ -1327,7 +1334,7 @@ function tableTileState(t) {
     else if (unpaid) { st = "bill"; label = "Bill due"; }
     else { st = "done"; label = "Cleared"; }
     const served = items.filter((i) => i.status === "served").length;
-    meta = items.length ? `${served}/${items.length} served${due > 0 ? ` · ${due.toFixed(2)} due` : ""}` : `${os.length} order${os.length > 1 ? "s" : ""}`;
+    meta = items.length ? `${served}/${items.length} served${due > 0 ? ` · ${inr(due)} due` : ""}` : `${os.length} order${os.length > 1 ? "s" : ""}`;
   } else if (sess) {
     st = "seated"; label = mem.length ? `Seated · ${mem.length}` : "Open";
     // The building cart is intentionally NOT shown on the tile — staff see it only
@@ -1553,7 +1560,7 @@ function renderTablePanel() {
   if (cart.length) {
     const cartTotal = cart.reduce((a, it) => a + (parseFloat(it.price) || 0) * (parseInt(it.qty, 10) || 1), 0);
     const rows = cart.map((it) => `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill building">building</span> ${esc(it.title || "Item")} ×${esc(String(it.qty || 1))}</div></div>`).join("");
-    buildingSec = `<div class="sx-sec"><div class="sx-sec-h">🛒 Building <span class="sub">· not sent yet</span></div>${rows}<div class="sx-total">Cart <b>${cartTotal.toFixed(2)}</b></div></div>`;
+    buildingSec = `<div class="sx-sec"><div class="sx-sec-h">🛒 Building <span class="sub">· not sent yet</span></div>${rows}<div class="sx-total">Cart <b>${inr(cartTotal)}</b></div></div>`;
   }
 
   let ordersSec;
@@ -1575,7 +1582,7 @@ function renderTablePanel() {
         const anyUnserved = rows.some((r) => r.status !== "served");
         body = rows.map(itemRowHtml).join("") + (anyUnserved ? `<button class="btn small tp-serveall" data-serveall="${esc(o.id)}">✓ Serve all (complete order)</button>` : "");
       }
-      return `<div class="tp-order"><div class="tp-order-head">Order ${oi + 1}${when ? ` · ${when}` : ""}</div><div class="tp-order-top"><span class="pay-pill ${paid ? "paid" : "pending"}">${paid ? "💳 Paid" : "⏳ Unpaid"}</span><span class="tp-order-total">${esc((parseFloat(o.total) || 0).toFixed(2))}</span><button class="btn small ${paid ? "" : "primary"}" data-pay="${esc(o.id)}" data-paid="${paid ? "1" : "0"}">${paid ? "↩ Unpaid" : "Mark paid"}</button></div>${body}</div>`;
+      return `<div class="tp-order"><div class="tp-order-head">Order ${oi + 1}${when ? ` · ${when}` : ""}</div><div class="tp-order-top"><span class="pay-pill ${paid ? "paid" : "pending"}">${paid ? "💳 Paid" : "⏳ Unpaid"}</span><span class="tp-order-total">${inr(o.total)}</span><button class="btn small ${paid ? "" : "primary"}" data-pay="${esc(o.id)}" data-paid="${paid ? "1" : "0"}">${paid ? "↩ Unpaid" : "Mark paid"}</button></div>${body}</div>`;
     }).join("");
     // A table-wide "serve everything" button when there are several orders with
     // anything still unserved (in addition to each order's own "Serve all").
@@ -1589,7 +1596,7 @@ function renderTablePanel() {
   // Each active call (water, napkins, clean…) gets its own "Done" button so staff
   // can clear them one at a time; if there are several, an "Attend all" clears them together.
   const callsSec = calls.length ? `<div class="sx-sec"><div class="sx-sec-h">Calls <span class="sub">· ${calls.length}</span></div>${calls.map((c) => `<div class="sx-call">${callEmoji(c.note)} ${esc(c.note || "Waiter call")} <button class="btn small primary" data-call-attend="${esc(c.id)}">Done</button></div>`).join("")}${calls.length > 1 ? `<button class="btn small" data-attend-all="${esc(t)}">✓ Attend all (${calls.length})</button>` : ""}</div>` : "";
-  const billSec = os.length ? `<div class="sx-sec"><div class="sx-sec-h">Bill</div><div class="sx-total">${due > 0 ? `Due <b>${due.toFixed(2)}</b> · ` : ""}Total <b>${billTotal.toFixed(2)}</b></div></div>` : "";
+  const billSec = os.length ? `<div class="sx-sec"><div class="sx-sec-h">Bill</div><div class="sx-total">${due > 0 ? `Due <b>${inr(due)}</b> · ` : ""}Total <b>${inr(billTotal)}</b></div></div>` : "";
   const foot = `${os.length ? `<button class="btn" data-tp-restart="${esc(t)}">↻ Restart</button>` : ""}${sess ? `<button class="btn danger" id="sxClose">⏻ Turn table off</button>` : ""}<button class="btn ${canFree ? "primary" : ""} tp-free" ${canFree ? "" : "disabled"}>${canFree ? "✓ Free table" : "Settle bill to free"}</button>`;
 
   const wrap = el(`<div class="sx-modal-overlay tbl-modal-overlay"><div class="tbl-modal sx-modal"><div class="tbl-modal-head"><h3>Table ${esc(t)}${sess ? ` <span class="sx-live">● open</span>` : ""}</h3><button class="tbl-modal-close" aria-label="Close">✕</button></div><div class="tbl-modal-body">${sessionSec}${buildingSec}${ordersSec}${callsSec}${billSec}</div><div class="tbl-modal-foot">${foot}</div></div></div>`);
