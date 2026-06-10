@@ -604,7 +604,13 @@ body {
 
 /* floor tiles — outline AND fill tint vary per state via --c */
 /* fixed-size tiles: same size always, just MORE per row as the floor gets wider */
-.ftile-grid { display: grid; grid-template-columns: repeat(auto-fill, 162px); justify-content: start; gap: 14px; }
+/* Fluid tile grid: columns are minmax(140px, 1fr) instead of a rigid 162px, so
+   the tiles SHRINK a little to fit one more column when there's spare width, and
+   GROW (via 1fr) to fill the row when there isn't — no dead gap on the right.
+   auto-fill (not auto-fit) keeps a short last row's tiles their normal size
+   instead of stretching a lone tile across the whole row. The whole thing
+   re-flows live as the side panel is dragged or the window resizes. */
+.ftile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 14px; }
 /* The faint chair watermark on a free/off table — top-right, subtle, premium. */
 .ft-officon { position: absolute; top: 13px; right: 14px; font-size: 20px; color: var(--c); opacity: 0.3; pointer-events: none; }
 .ftile { --c: #6b6253; position: relative; text-align: left; cursor: pointer; min-height: 104px;
