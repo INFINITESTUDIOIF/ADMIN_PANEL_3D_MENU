@@ -48,8 +48,10 @@ const state = {
 // $  : shorthand for "find the first element matching this CSS selector".
 const $ = (s, r = document) => r.querySelector(s);
 // clone: make a deep, independent copy of an object (so editing the copy never
-// changes the original until we deliberately save).
-const clone = (o) => JSON.parse(JSON.stringify(o));
+// changes the original until we deliberately save). structuredClone is the
+// browser's native deep copy — much faster than the old JSON round-trip,
+// which added real lag when opening big dishes.
+const clone = (o) => (typeof structuredClone === "function" ? structuredClone(o) : JSON.parse(JSON.stringify(o)));
 // esc: make text safe to drop into HTML. It turns characters like < > & " into
 // their harmless codes so a dish name with a "<" can't break or hijack the page.
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) =>
@@ -243,7 +245,13 @@ function renderList() {
           </div>
         </li>`
       );
-      li.onclick = () => selectRecord(r); // clicking a row opens it in the editor on the right
+      li.onclick = () => {
+        // INSTANT feedback: highlight this row right now, before any heavy
+        // work, so the click never feels ignored (it used to take ~1s).
+        ul.querySelectorAll(".list-item.active").forEach((x) => x.classList.remove("active"));
+        li.classList.add("active");
+        selectRecord(r); // then open it in the editor on the right
+      };
       ul.appendChild(li);
     });
 }
@@ -279,7 +287,8 @@ function blank(tab) {
 function selectRecord(r) {
   state.sel = clone(r);
   state.isNew = false;
-  renderList();
+  // No renderList() here: rebuilding the whole sidebar on every click was a
+  // big part of the lag, and the click handler already moved the highlight.
   renderEditor();
 }
 // newRecord: start a fresh, blank row for the current tab.
@@ -778,57 +787,89 @@ async function restoreTable(id) {
 }
 
 // setOrderStatus: move one order to a new status (e.g. Accept → preparing).
+// OPTIMISTIC: the screen flips INSTANTLY and the server is told in the
+// background; if the server refuses, we roll back and explain. This is what
+// makes 20 clicks in a row feel real-time instead of 20 waits.
 async function setOrderStatus(id, status) {
+  const o = (state.data.orders || []).find((x) => x.id === id);
+  const prev = o ? o.status : null;
+  if (o) o.status = status;        // flip the screen NOW
+  opBegin(id);                     // shield this order from the poll meanwhile
+  renderEditor();
+  renderTablePanel();
   try {
-    await api("PATCH", "/orders/" + id, { status });
-    const o = (state.data.orders || []).find((x) => x.id === id);
-    if (o) o.status = status;
-    renderEditor();
-    renderTablePanel();
+    await api("PATCH", "/orders/" + id, { status }); // sync in the background
     toast("Order updated → " + status, "ok");
   } catch (e) {
+    if (o && prev !== null) o.status = prev;         // server said no -> undo
+    renderEditor();
+    renderTablePanel();
     toast("Could not update order: " + e.message, "err");
+  } finally {
+    opEnd(id);
   }
 }
 
 // deleteOrders: permanently delete orders — a single one, a selected batch, or
-// every order (all=true). Picks the most efficient endpoint for each case.
+// every order (all=true). OPTIMISTIC: the cards vanish instantly; the server
+// catches up in the background (and the rows return + an error shows if it
+// fails). No more re-downloading all 200 orders just to delete one.
 async function deleteOrders(ids, all = false) {
+  const before = state.data.orders || [];
+  const gone = all ? before.map((o) => o.id) : ids;
+  state.data.orders = all ? [] : before.filter((o) => !ids.includes(o.id));
+  lastOrderCount = state.data.orders.length;
+  gone.forEach((id) => pendingDeletes.add(id)); // poll must not resurrect them
+  renderEditor();
   try {
     if (all) await api("POST", "/orders/delete", { all: true });
     else if (ids && ids.length === 1) await api("DELETE", "/orders/" + ids[0]);
     else await api("POST", "/orders/delete", { ids });
-    await loadOrders();
-    lastOrderCount = (state.data.orders || []).length;
-    renderEditor();
     toast(all ? "All orders deleted" : "Order(s) deleted", "ok");
   } catch (e) {
+    state.data.orders = before;   // bring the rows back — the delete failed
+    lastOrderCount = before.length;
+    renderEditor();
     toast("Delete failed: " + e.message, "err");
+  } finally {
+    gone.forEach((id) => pendingDeletes.delete(id));
   }
 }
 
 // setOrderPayment: flip one order between paid and unpaid.
+// OPTIMISTIC like setOrderStatus: screen first, server second, undo on error.
 async function setOrderPayment(id, paid) {
+  const o = (state.data.orders || []).find((x) => x.id === id);
+  const prev = o ? o.payment_status : null;
+  if (o) o.payment_status = paid ? "paid" : "pending"; // flip the screen NOW
+  opBegin(id);                     // shield this order from the poll meanwhile
+  renderEditor();
+  renderTablePanel();
   try {
     await api("PATCH", "/orders/" + id, { payment_status: paid ? "paid" : "pending" });
-    const o = (state.data.orders || []).find((x) => x.id === id);
-    if (o) o.payment_status = paid ? "paid" : "pending";
-    renderEditor();
-    renderTablePanel();
     toast(paid ? "Marked paid 💳" : "Marked unpaid", "ok");
   } catch (e) {
+    if (o && prev !== null) o.payment_status = prev;   // undo on failure
+    renderEditor();
+    renderTablePanel();
     toast("Could not update payment: " + e.message, "err");
+  } finally {
+    opEnd(id);
   }
 }
 
 // resolveCall: mark a waiter call as attended and drop it from the list.
+// OPTIMISTIC: the call disappears instantly; restored if the server fails.
 async function resolveCall(id) {
+  const before = state.data.calls || [];
+  state.data.calls = before.filter((c) => c.id !== id); // vanish NOW
+  renderEditor();
   try {
     await api("PATCH", "/calls/" + id, { resolved: true });
-    state.data.calls = (state.data.calls || []).filter((c) => c.id !== id);
-    renderEditor();
     toast("Marked attended", "ok");
   } catch (e) {
+    state.data.calls = before; // bring it back — the server didn't get it
+    renderEditor();
     toast("Could not update call: " + e.message, "err");
   }
 }
@@ -1834,6 +1875,14 @@ async function loadOrders() {
 // lands, no matter which tab the owner is on.
 let lastOrderCount = null; // baseline; set on first poll so we don't alert on startup
 let lastCallCount = null;  // pending waiter calls baseline
+// Optimistic-click bookkeeping: while a save is still travelling to the
+// server, the 1-second poll must not overwrite that order with stale data
+// (it would flicker the click back). Deletes get the same protection.
+const pendingOrderOps = new Map();  // order id -> number of in-flight saves
+const pendingDeletes = new Set();   // ids removed on screen, server catching up
+const opBegin = (id) => pendingOrderOps.set(id, (pendingOrderOps.get(id) || 0) + 1);
+const opEnd = (id) => { const n = (pendingOrderOps.get(id) || 1) - 1; n <= 0 ? pendingOrderOps.delete(id) : pendingOrderOps.set(id, n); };
+let lastPollSig = "";               // fingerprint of the last drawn orders view
 let lastReqCount = null;   // pending requests (join/access/open/waiter) baseline
 let unseenOrders = 0;
 
@@ -1880,6 +1929,12 @@ async function pollOrders() {
   } catch {
     return; // network blip — try again next tick
   }
+  // Merge, don't clobber: keep the LOCAL copy of any order whose save is
+  // still in flight, and keep optimistically-deleted rows gone — otherwise
+  // this poll would flicker fresh clicks back to their old state.
+  orders = orders
+    .filter((o) => !pendingDeletes.has(o.id))
+    .map((o) => (pendingOrderOps.has(o.id) ? ((state.data.orders || []).find((x) => x.id === o.id) || o) : o));
   state.data.orders = orders;
   try { calls = await api("GET", "/calls"); state.data.calls = calls; } catch { calls = state.data.calls || []; }
   // The session board (sessions + members + the requests queue + blocklist) is now
@@ -1903,7 +1958,16 @@ async function pollOrders() {
   // already on screen and the debounced flush will reconcile it shortly. We still
   // fetched fresh data above, so the new-order/call/request alerts below still fire.
   if (!serveFlushPending()) {
-    if (state.tab === "orders") renderEditor();
+    // Only redraw the Orders tab when something VISIBLE actually changed —
+    // rebuilding 200 cards every second ate clicks and scroll position.
+    const sig = JSON.stringify([
+      orders.map((o) => [o.id, o.status, o.payment_status, o.archived ? 1 : 0]),
+      (calls || []).filter((c) => !c.resolved).map((c) => c.id),
+      (board && board.requests ? board.requests.length : 0),
+    ]);
+    const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if (state.tab === "orders" && sig !== lastPollSig && !typing) renderEditor();
+    lastPollSig = sig;
     if (state.tab === "tables") loadSessions(true); // keep the live floor fresh
   }
 
