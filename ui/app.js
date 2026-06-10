@@ -1239,10 +1239,29 @@ async function loadSessions(fromPoll) {
 // Each of these calls the server, then reloads the board and shows a toast. They
 // all follow the same shape: do the action, refresh, confirm (or report a failure).
 
+// flipOrderItems: locally mark every dish row of an order — the optimistic
+// half of the quick actions; the server is told right after in the background.
+function flipOrderItems(o, from, to) {
+  (state.board.items || []).forEach((it) => { if (it.order_id === o.id && (!from || it.status === from)) it.status = to; });
+  (o.items || []).forEach((it) => { if (!from || (it.status || "received") === from) it.status = to; });
+}
+
 // openTableSession: open (seat) a table so its guests can order.
+// OPTIMISTIC: the tile flips to "Open" instantly via a temporary local
+// session; the follow-up refresh swaps in the server's real one.
 async function openTableSession(table) {
-  try { await api("POST", "/sessions/open", { table: String(table) }); await loadSessions(); toast("Table opened", "ok"); }
-  catch (e) { toast("Could not open: " + e.message, "err"); }
+  const t = String(table);
+  const pending = { id: "pending-" + t, table_number: t, status: "open", auto_approve: false };
+  state.board.sessions = [...(state.board.sessions || []), pending];
+  floorOpsInFlight++;
+  loadSessions(true); // render-only, no network
+  try { await api("POST", "/sessions/open", { table: t }); floorOpsInFlight--; await loadSessions(); toast("Table opened", "ok"); }
+  catch (e) {
+    floorOpsInFlight--;
+    state.board.sessions = (state.board.sessions || []).filter((s) => s.id !== pending.id); // undo
+    loadSessions(true);
+    toast("Could not open: " + e.message, "err");
+  }
 }
 // openAllTables: seat every table that isn't open yet, in one go (asks first).
 async function openAllTables() {
@@ -1313,9 +1332,15 @@ async function itemStatus(id, status) {
   } catch (e) { toast("Failed: " + e.message, "err"); }
 }
 // resolveRequest: approve or dismiss a queued "let me in / open this table" request.
+// OPTIMISTIC: the request row leaves the queue instantly; the real refresh
+// afterwards brings in whatever the approval created (e.g. the new session).
 async function resolveRequest(id, status) {
-  try { await api("POST", "/requests/" + id + "/resolve", { status }); await loadSessions(); toast(status === "approved" ? "Approved" : "Dismissed", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  const before = state.board.requests || [];
+  state.board.requests = before.filter((r) => r.id !== id);
+  floorOpsInFlight++;
+  loadSessions(true);
+  try { await api("POST", "/requests/" + id + "/resolve", { status }); floorOpsInFlight--; await loadSessions(); toast(status === "approved" ? "Approved" : "Dismissed", "ok"); }
+  catch (e) { floorOpsInFlight--; state.board.requests = before; loadSessions(true); toast("Failed: " + e.message, "err"); }
 }
 // block: add a phone/table to the blocklist (opts says which).
 async function block(opts) {
@@ -1328,9 +1353,15 @@ async function unblock(id) {
   catch (e) { toast("Could not unblock: " + e.message, "err"); }
 }
 // attendCall: mark a waiter call as handled.
+// OPTIMISTIC: the row leaves the "Needs" list (and the tile emoji) instantly.
 async function attendCall(id) {
-  try { await api("PATCH", "/calls/" + id, { resolved: true }); state.data.calls = (state.data.calls || []).filter((c) => c.id !== id); await loadSessions(); toast("Marked attended", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  const before = state.data.calls || [];
+  state.data.calls = before.filter((c) => c.id !== id);
+  floorOpsInFlight++;
+  loadSessions(true);
+  try { await api("PATCH", "/calls/" + id, { resolved: true }); toast("Marked attended", "ok"); }
+  catch (e) { state.data.calls = before; loadSessions(true); toast("Failed: " + e.message, "err"); }
+  finally { floorOpsInFlight--; }
 }
 
 // ===================== UNIFIED FLOOR — one control center for every table =====================
@@ -1555,9 +1586,18 @@ function bindFloor() {
 }
 
 // Flip a session toggle (system on / require location / require code) right from the floor.
+// OPTIMISTIC: the toggle (and anything it shows/hides) reacts instantly.
 async function saveSetting(key, value) {
-  try { const r = await api("POST", "/settings", { [key]: value }); state.data.settings = r; await loadSessions(); toast("Saved", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  const prev = (state.data.settings || {})[key];
+  state.data.settings = { ...(state.data.settings || {}), [key]: value };
+  floorOpsInFlight++;
+  loadSessions(true);
+  try { const r = await api("POST", "/settings", { [key]: value }); state.data.settings = r; loadSessions(true); toast("Saved", "ok"); }
+  catch (e) {
+    state.data.settings = { ...(state.data.settings || {}), [key]: prev }; // undo
+    loadSessions(true);
+    toast("Failed: " + e.message, "err");
+  } finally { floorOpsInFlight--; }
 }
 // Save the café location from the side panel.
 async function saveGeo() {
@@ -1729,54 +1769,81 @@ async function serveAllOrder(orderId) {
 async function acceptTableOrders(t) {
   const recv = ordersForTable(t).filter((o) => o.status === "received");
   if (recv.length > 1) { openTablePanel(t); return; } // multiple → accept each in the detail view
-  try { for (const o of recv) await api("POST", "/orders/" + o.id + "/accept"); await loadSessions(); toast("Order accepted", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  // OPTIMISTIC: tile flips to "Preparing" instantly, server told in background.
+  recv.forEach((o) => { o.status = "preparing"; flipOrderItems(o, "received", "preparing"); opBegin(o.id); });
+  floorOpsInFlight++;
+  loadSessions(true);
+  try { for (const o of recv) await api("POST", "/orders/" + o.id + "/accept"); toast("Order accepted", "ok"); }
+  catch (e) { toast("Failed: " + e.message, "err"); await loadSessions(); } // reload truth on failure
+  finally { floorOpsInFlight--; recv.forEach((o) => opEnd(o.id)); }
 }
 // Serve EVERY order on a table at once (the table-wide "mark all served").
+// OPTIMISTIC like accept: every dish row flips to served on screen first.
 async function serveAllOrders(t) {
   const orders = ordersForTable(t);
   if (!orders.length) return;
-  try { for (const o of orders) await api("POST", "/orders/" + o.id + "/serve-all"); await loadSessions(); toast("All orders served", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  orders.forEach((o) => { o.status = "served"; flipOrderItems(o, null, "served"); opBegin(o.id); });
+  floorOpsInFlight++;
+  loadSessions(true);
+  renderTablePanel();
+  try { for (const o of orders) await api("POST", "/orders/" + o.id + "/serve-all"); toast("All orders served", "ok"); }
+  catch (e) { toast("Failed: " + e.message, "err"); await loadSessions(); }
+  finally { floorOpsInFlight--; orders.forEach((o) => opEnd(o.id)); }
 }
 // Quick action: mark every open call on a table attended (clears the tile's emoji).
 async function attendTableCalls(t) {
   const cs = callsForTable(t);
-  try { for (const c of cs) await api("PATCH", "/calls/" + c.id, { resolved: true }); await loadSessions(); toast("Attended", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  // OPTIMISTIC: the call emojis leave the tile instantly.
+  const before = state.data.calls || [];
+  const ids = new Set(cs.map((c) => c.id));
+  state.data.calls = before.filter((c) => !ids.has(c.id));
+  floorOpsInFlight++;
+  loadSessions(true);
+  try { for (const c of cs) await api("PATCH", "/calls/" + c.id, { resolved: true }); toast("Attended", "ok"); }
+  catch (e) { state.data.calls = before; loadSessions(true); toast("Failed: " + e.message, "err"); }
+  finally { floorOpsInFlight--; }
 }
 // RST: clear a finished table's orders off the floor but KEEP the table open for a new round.
 async function restartTable(t) {
   const ids = ordersForTable(t).map((o) => o.id);
   if (!ids.length) return;
   if (!(await confirmDialog(`Restart Table ${t}? Its orders clear off the floor and the table stays OPEN for a fresh round.`, "Restart"))) return;
+  // OPTIMISTIC after the confirm: the tile resets instantly, server follows.
+  // Orders become SERVED + archived (the round is done; they stay as real,
+  // completed orders in records/revenue — NOT cancelled, which would void them).
+  (state.data.orders || []).forEach((o) => { if (ids.includes(o.id)) { o.archived = true; o.status = "served"; opBegin(o.id); } });
+  floorOpsInFlight++;
+  loadSessions(true);
   try {
-    // Mark each order SERVED + archived: the round is done, so the guest's order
-    // tracker finalizes (stops "Preparing" and clears) and the orders stay as real,
-    // completed orders in records/revenue — NOT cancelled, which would void them.
     for (const id of ids) await api("PATCH", "/orders/" + id, { archived: true, status: "served" });
-    (state.data.orders || []).forEach((o) => { if (ids.includes(o.id)) { o.archived = true; o.status = "served"; } });
     // keep the table OPEN for the next round — open a fresh session if it doesn't have one
     if ((state.data.settings || {}).sessions_enabled && !openSessionForTable(t)) await api("POST", "/sessions/open", { table: String(t) });
     await loadSessions();
     toast(`Table ${t} restarted — still open`, "ok");
-  } catch (e) { toast("Could not restart: " + e.message, "err"); }
+  } catch (e) { toast("Could not restart: " + e.message, "err"); await loadSessions(); }
+  finally { floorOpsInFlight--; ids.forEach((id) => opEnd(id)); }
 }
 // CLS: free the table (archive orders + close any open session).
 function closeTableQuick(t) { freeTableAll(t, openSessionForTable(t)); }
 
 // Free a table: archive its settled orders off the floor and, if a session is open, close it.
+// OPTIMISTIC after the confirm: the tile turns Free instantly; the server
+// catches up in the background and a refresh reconciles (or reloads on error).
 async function freeTableAll(t, sess) {
   const ids = ordersForTable(t).map((o) => o.id);
   if (!(await confirmDialog(`Free Table ${t}? Settled orders leave the floor${sess ? " and the session closes" : ""} (kept in records).`, "Free table"))) return;
+  (state.data.orders || []).forEach((o) => { if (ids.includes(o.id)) { o.archived = true; opBegin(o.id); } });
+  if (sess) sess.status = "closed";
+  state.openSess = null; document.querySelector(".sx-modal-overlay")?.remove();
+  floorOpsInFlight++;
+  loadSessions(true); // instant redraw from local state
   try {
     for (const id of ids) await api("PATCH", "/orders/" + id, { archived: true });
-    (state.data.orders || []).forEach((o) => { if (ids.includes(o.id)) o.archived = true; });
     if (sess) await api("POST", "/sessions/" + sess.id + "/close");
-    state.openSess = null; document.querySelector(".sx-modal-overlay")?.remove();
     await loadSessions();
     toast(`Table ${t} freed`, "ok");
-  } catch (e) { toast("Could not free: " + e.message, "err"); }
+  } catch (e) { toast("Could not free: " + e.message, "err"); await loadSessions(); }
+  finally { floorOpsInFlight--; ids.forEach((id) => opEnd(id)); }
 }
 
 // ===================== USERS / LOG =====================
@@ -1921,6 +1988,10 @@ const pendingDeletes = new Set();   // ids removed on screen, server catching up
 const opBegin = (id) => pendingOrderOps.set(id, (pendingOrderOps.get(id) || 0) + 1);
 const opEnd = (id) => { const n = (pendingOrderOps.get(id) || 1) - 1; n <= 0 ? pendingOrderOps.delete(id) : pendingOrderOps.set(id, n); };
 let lastPollSig = "";               // fingerprint of the last drawn orders view
+// While any FLOOR action (open/free/attend/approve…) is mid-save, the poll
+// must not replace the board or redraw the Tables tab — it would briefly
+// flicker the optimistic change back before the server confirms.
+let floorOpsInFlight = 0;
 let lastReqCount = null;   // pending requests (join/access/open/waiter) baseline
 let unseenOrders = 0;
 
@@ -1978,7 +2049,11 @@ async function pollOrders() {
   // The session board (sessions + members + the requests queue + blocklist) is now
   // refreshed on every tick too, so the live cart and the request queue stay fresh
   // and we can chime for new requests from ANY tab.
-  try { board = await api("GET", "/sessions"); state.board = board; } catch { board = state.board || {}; }
+  try {
+    board = await api("GET", "/sessions");
+    // Don't clobber the board while a floor action's save is still in flight.
+    if (!floorOpsInFlight) state.board = board; else board = state.board || {};
+  } catch { board = state.board || {}; }
 
   // Remember the previous counts, then update to the new ones. The "did it grow?"
   // checks below compare prev vs now to detect something brand-new arriving.
@@ -2006,7 +2081,7 @@ async function pollOrders() {
     const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
     if (state.tab === "orders" && sig !== lastPollSig && !typing) renderEditor();
     lastPollSig = sig;
-    if (state.tab === "tables") loadSessions(true); // keep the live floor fresh
+    if (state.tab === "tables" && !floorOpsInFlight) loadSessions(true); // keep the live floor fresh
   }
 
   // new order alert
