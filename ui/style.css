@@ -647,7 +647,22 @@ body {
 .ftile-skel .sk-lbl { width: 62%; height: 13px; margin-top: auto; }
 .ftile-skel .sk-meta { width: 46%; height: 10px; margin-top: 8px; }
 @keyframes edSkelShimmer { 0% { background-position: -110px 0; } 100% { background-position: 110px 0; } }
-@media (prefers-reduced-motion: reduce) { .ftile-skel .sk-num, .ftile-skel .sk-lbl, .ftile-skel .sk-meta { animation: none; } }
+
+/* Side-panel skeleton — matches the real .fc-card cards on the right so the
+   whole floor layout is present from the first frame, not just the tiles. */
+.fc-card-skel { display: flex; flex-direction: column; gap: 11px; }
+.fc-card-skel .sk-cardtitle, .fc-card-skel .sk-row {
+  background: linear-gradient(100deg, rgba(245,236,221,0.04) 30%, rgba(245,236,221,0.11) 50%, rgba(245,236,221,0.04) 70%);
+  background-size: 220px 100%; animation: edSkelShimmer 1.2s linear infinite; border-radius: 8px;
+}
+.fc-card-skel .sk-cardtitle { height: 14px; margin-bottom: 4px; }
+.fc-card-skel .sk-row { width: 100%; height: 11px; }
+.fc-card-skel .sk-row:last-child { width: 70%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ftile-skel .sk-num, .ftile-skel .sk-lbl, .ftile-skel .sk-meta,
+  .fc-card-skel .sk-cardtitle, .fc-card-skel .sk-row { animation: none; }
+}
 
 /* side control cards */
 .fc-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }

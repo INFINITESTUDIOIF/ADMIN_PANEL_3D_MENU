@@ -1517,7 +1517,16 @@ function tableTileState(t) {
 function floorHtml() {
   const s = state.data.settings || {};
   const sessionsOn = !!s.sessions_enabled;
-  const n = Math.max(1, parseInt(s.table_count, 10) || 12); // number of tables to draw
+  // Number of tables to draw. On the very FIRST paint the settings haven't
+  // loaded yet, so without help we'd default to 12 and then jump to the real 13
+  // a moment later — a visible "one tile forms, then another" flicker in the
+  // skeleton. Fix: remember the real count in localStorage and use it as the
+  // default, so the skeleton starts at the right size. (Falls back to 12 only
+  // on a browser that has never loaded this editor.)
+  let cachedN = parseInt(localStorage.getItem("lfh_editor_table_count"), 10);
+  if (!Number.isFinite(cachedN) || cachedN < 1) cachedN = 12;
+  const n = Math.max(1, parseInt(s.table_count, 10) || cachedN);
+  if (s.table_count) { try { localStorage.setItem("lfh_editor_table_count", String(parseInt(s.table_count, 10))); } catch {} }
   const reqs = state.board.requests || [];
   const blocks = state.board.blocklist || [];
 
@@ -1532,11 +1541,20 @@ function floorHtml() {
   // loads a moment later — boardLoaded flips true — and the real tiles replace
   // this. Mirrors the menu's loading skeleton so the two screens feel the same.
   if (!state.boardLoaded) {
+    // left: a shimmer tile per table, sized to the (cached) real count.
     let skel = "";
     for (let i = 1; i <= n; i++) {
       skel += `<div class="ftile ftile-skel" aria-hidden="true"><div class="sk-num"></div><div class="sk-lbl"></div><div class="sk-meta"></div></div>`;
     }
-    return `<div class="floor-wrap"><div class="floor-main"><div class="ed-head"><h2>Tables <span class="sub">· live floor</span></h2><button class="btn" id="refreshFloor">↻ Refresh</button></div>${legend}<div class="ftile-grid">${skel}</div></div></div>`;
+    const skelMain = `<div class="floor-main"><div class="ed-head"><h2>Tables <span class="sub">· live floor</span></h2><button class="btn" id="refreshFloor">↻ Refresh</button></div>${legend}<div class="ftile-grid">${skel}</div></div>`;
+    // right: skeleton versions of the side-panel cards so the whole layout is
+    // present from the first frame (no empty gutter that fills in late). A card
+    // = a title bar + a few placeholder rows of shimmer.
+    const skRow = `<div class="sk-row"></div>`;
+    const skCard = (titleW, rows) => `<div class="fc-card fc-card-skel"><div class="sk-cardtitle" style="width:${titleW}"></div>${skRow.repeat(rows)}</div>`;
+    const sideW = state.floorSideW || 300;
+    const skelSide = `<aside class="floor-side" style="width:${sideW}px;flex:0 0 ${sideW}px">${skCard("46%", 4)}${skCard("38%", 2)}${skCard("34%", 2)}</aside>`;
+    return `<div class="floor-wrap">${skelMain}<div class="floor-resizer"></div>${skelSide}</div>`;
   }
 
   let tiles = "";
