@@ -569,7 +569,7 @@ body {
 .lgi { display: inline-flex; align-items: center; gap: 7px; }
 .ldot { width: 12px; height: 12px; border-radius: 4px; display: inline-block; }
 .ldot-free { background: #6b6253; } .ldot-seated { background: #2dd4bf; } .ldot-new { background: #f59e0b; }
-.ldot-prep { background: #4f9dff; } .ldot-bill { background: #fb923c; } .ldot-done { background: #4ade80; }
+.ldot-prep { background: #4f9dff; } .ldot-done { background: #4ade80; } /* (bill dot removed — payment lives in the outline) */
 .ldot-req { background: #e7b75a; }
 .ldot-call { background: transparent; width: auto; }
 
@@ -585,7 +585,7 @@ body {
   transition: transform .12s ease, box-shadow .16s ease; }
 .ftile:hover { transform: translateY(-2px); box-shadow: 0 10px 24px rgba(0,0,0,0.4); }
 .ft-free { --c: #6b6253; } .ft-seated { --c: #2dd4bf; } .ft-new { --c: #f59e0b; }
-.ft-prep { --c: #4f9dff; } .ft-bill { --c: #fb923c; } .ft-done { --c: #6b6253; }
+.ft-prep { --c: #4f9dff; } .ft-done { --c: #6b6253; } /* (ft-bill removed — payment lives in the outline) */
 .ft-req { --c: #e7b75a; }
 .ft-new { box-shadow: 0 0 16px color-mix(in srgb, var(--c) 26%, transparent); }
 /* a free table a guest is asking to be let into — pulse so staff can't miss it */

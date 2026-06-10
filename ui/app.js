@@ -1244,6 +1244,30 @@ async function openTableSession(table) {
   try { await api("POST", "/sessions/open", { table: String(table) }); await loadSessions(); toast("Table opened", "ok"); }
   catch (e) { toast("Could not open: " + e.message, "err"); }
 }
+// openAllTables: seat every table that isn't open yet, in one go (asks first).
+async function openAllTables() {
+  const n = Math.max(1, parseInt((state.data.settings || {}).table_count, 10) || 12);
+  const targets = [];
+  for (let i = 1; i <= n; i++) if (!openSessionForTable(String(i))) targets.push(String(i));
+  if (!targets.length) return toast("Every table is already open", "ok");
+  if (!(await confirmDialog(`Open all ${targets.length} remaining table${targets.length > 1 ? "s" : ""}?`, "Open all"))) return;
+  // Fire the opens in parallel; count what failed instead of stopping halfway.
+  const results = await Promise.allSettled(targets.map((t) => api("POST", "/sessions/open", { table: t })));
+  const failed = results.filter((r) => r.status === "rejected").length;
+  await loadSessions();
+  toast(failed ? `Opened ${targets.length - failed}, ${failed} failed` : `Opened ${targets.length} table${targets.length > 1 ? "s" : ""}`, failed ? "err" : "ok");
+}
+// closeAllTables: end EVERY open session at once (asks first — guests at those
+// tables can no longer order until reopened).
+async function closeAllTables() {
+  const open = (state.board.sessions || []).filter((s) => s.status === "open");
+  if (!open.length) return toast("No open tables", "ok");
+  if (!(await confirmDialog(`Close ALL ${open.length} open table${open.length > 1 ? "s" : ""}? Guests at them can't order until reopened.`, "Close all"))) return;
+  const results = await Promise.allSettled(open.map((s) => api("POST", "/sessions/" + s.id + "/close")));
+  const failed = results.filter((r) => r.status === "rejected").length;
+  await loadSessions();
+  toast(failed ? `Closed ${open.length - failed}, ${failed} failed` : `Closed ${open.length} table${open.length > 1 ? "s" : ""}`, failed ? "err" : "ok");
+}
 // closeSession: end a table's session (after confirming).
 async function closeSession(id) {
   if (!(await confirmDialog("Close this session? Guests at this table can no longer order or call until it's reopened.", "Close session"))) return;
@@ -1372,7 +1396,10 @@ function tableTileState(t) {
   if (os.length) {
     if (anyReceived) { st = "new"; label = "New order"; }
     else if (anyPreparing) { st = "prep"; label = "Preparing"; }
-    else if (unpaid) { st = "bill"; label = "Bill due"; }
+    // No separate "Bill due" fill anymore (owner, 2026-06-10): payment is
+    // already told by the OUTLINE (red = unpaid, green = paid), so a fully
+    // served table just says "Served" until it's paid, then "Cleared".
+    else if (unpaid) { st = "done"; label = "Served"; }
     else { st = "done"; label = "Cleared"; }
     const served = items.filter((i) => i.status === "served").length;
     meta = items.length ? `${served}/${items.length} served${due > 0 ? ` · ${inr(due)} due` : ""}` : `${os.length} order${os.length > 1 ? "s" : ""}`;
@@ -1396,7 +1423,7 @@ function tableTileState(t) {
   return {
     st, label, meta, badges,
     pay: os.length ? (unpaid ? "red" : "green") : "", // outline = payment: red unpaid / green paid
-    done: st === "done",        // served AND paid → offer RST/CLS
+    done: st === "done" && !unpaid, // served AND paid → offer RST/CLS (never free an unpaid table)
     hasNew: anyReceived,        // a new order waiting to be accepted
     hasCall: calls.length > 0,
     hasReq: reqs.length > 0,    // a guest is waiting to be let in
@@ -1413,8 +1440,9 @@ function floorHtml() {
   const reqs = state.board.requests || [];
   const blocks = state.board.blocklist || [];
 
-  // legend — every state + its colour
-  const LEG = [["free", "Free"], ["req", "Wants in"], ["seated", "Seated"], ["new", "New order"], ["prep", "Preparing"], ["bill", "Bill due"]];
+  // legend — every state + its colour. ("Bill due" was removed: payment is
+  // already shown by the red/green outline, so a fill colour for it was noise.)
+  const LEG = [["free", "Free"], ["req", "Wants in"], ["seated", "Seated"], ["new", "New order"], ["prep", "Preparing"]];
   const legend = `<div class="floor-legend"><span class="lgcap">inside:</span>${LEG.map(([k, v]) => `<span class="lgi"><i class="ldot ldot-${k}"></i>${v}</span>`).join("")}<span class="lgi"><i class="ldot ldot-call">🔔</i>called</span><span class="lgcap">outline:</span><span class="lgi"><i class="lring lring-red"></i>unpaid</span><span class="lgi"><i class="lring lring-green"></i>paid</span></div>`;
 
   let tiles = "";
@@ -1436,7 +1464,12 @@ function floorHtml() {
         <div class="ft-label">${esc(label)}</div><div class="ft-meta">${esc(meta)}</div>
         ${quick ? `<div class="ft-quick">${quick}</div>` : ""}</div>`;
   }
-  const main = `<div class="floor-main"><div class="ed-head"><h2>Tables <span class="sub">· live floor</span></h2><button class="btn" id="refreshFloor">↻ Refresh</button></div>${legend}<div class="ftile-grid">${tiles}</div></div>`;
+  // Bulk quick actions (owner request 2026-06-10): seat the whole floor or
+  // clear it in one tap, right in the header. Only shown when sessions are on.
+  const bulkBtns = sessionsOn
+    ? `<button class="btn small" id="floorOpenAll">⬆ Open all</button><button class="btn small" id="floorCloseAll">⬇ Close all</button>`
+    : "";
+  const main = `<div class="floor-main"><div class="ed-head"><h2>Tables <span class="sub">· live floor</span></h2>${bulkBtns}<button class="btn" id="refreshFloor">↻ Refresh</button></div>${legend}<div class="ftile-grid">${tiles}</div></div>`;
 
   // side panel — session controls + café location + requests + blocklist (all here, not in General)
   const tgl = (label, key) => `<label class="fc-toggle"><input type="checkbox" data-setting="${key}" ${s[key] ? "checked" : ""}/><span class="fc-sw"></span><span>${label}</span></label>`;
@@ -1479,6 +1512,11 @@ function bindFloor() {
   const ed = $("#editor");
   const rb = document.getElementById("refreshFloor");
   if (rb) rb.onclick = () => loadSessions();
+  // Bulk open/close for the whole floor (both confirm before acting).
+  const oa = document.getElementById("floorOpenAll");
+  if (oa) oa.onclick = () => openAllTables();
+  const ca = document.getElementById("floorCloseAll");
+  if (ca) ca.onclick = () => closeAllTables();
   ed.querySelectorAll("[data-floor-table]").forEach((t) => (t.onclick = () => openTablePanel(t.dataset.floorTable))); // tap a tile → open its panel
   // quick actions on the tile itself — stopPropagation so they don't also open the detail panel
   ed.querySelectorAll("[data-quick-open]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openTableSession(b.dataset.quickOpen); }));

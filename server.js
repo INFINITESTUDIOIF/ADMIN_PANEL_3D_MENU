@@ -177,7 +177,14 @@ if (EDITOR_PASSWORD) {
   });
 }
 
-app.use(express.static(path.join(__dirname, "ui"))); // serve the browser UI files in the /ui folder
+// Serve the browser UI files in the /ui folder. "no-cache" doesn't mean
+// "don't cache" — it means the browser must CHECK with us before reusing its
+// copy, so every reload gets the newest app.js/style.css automatically (a
+// stale cached app.js once made fresh speed fixes invisible to the owner).
+app.use(express.static(path.join(__dirname, "ui"), {
+  etag: true,
+  setHeaders: (res) => res.setHeader("Cache-Control", "no-cache"),
+}));
 
 // Wrap async handlers so thrown errors become clean 500s instead of crashes.
 // "wrap" is a safety net: it runs an endpoint, and if anything goes wrong it
