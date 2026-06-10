@@ -37,12 +37,17 @@ body {
 }
 .brand { font-weight: 700; font-size: 17px; letter-spacing: .3px; }
 .brand span { margin-right: 4px; }
-.tabs { display: flex; gap: 6px; }
+/* The 7 tabs can crowd a mid-width window before the phone layout kicks in;
+   let them scroll sideways rather than overflow/wrap awkwardly. min-width:0
+   lets the flex item actually shrink so the scroll can engage. */
+.tabs { display: flex; gap: 6px; overflow-x: auto; min-width: 0; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
 .tab {
   background: transparent; color: var(--muted);
   border: 1px solid transparent; border-radius: 999px;
   padding: 8px 18px; font-size: 14px; font-weight: 600; cursor: pointer;
   transition: .15s;
+  flex: none; white-space: nowrap; /* keep full size + on one line so .tabs scrolls cleanly */
 }
 .tab:hover { color: var(--text); }
 .tab.active { background: var(--gold); color: #2a1d0c; }
@@ -140,8 +145,12 @@ body {
 .card h3 { margin: 0 0 14px; font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--gold); }
 
 .grid { display: grid; gap: 14px; }
-.grid.cols-2 { grid-template-columns: 1fr 1fr; }
-.grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+/* Fluid form grids: instead of rigid 2/3/6 fixed columns (which stayed cramped
+   between ~760px and desktop), columns are auto-fit minmax(…, 1fr) so they
+   reflow continuously with the editor pane width — same fluid philosophy as the
+   floor tile grid. They collapse to one column on their own when space is tight. */
+.grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+.grid.cols-3 { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
 
 /* tag membership manager (which dishes carry this tag) */
 .memb-search {
@@ -163,11 +172,14 @@ body {
 .memb-title { flex: 1; min-width: 0; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .memb-cat { font-size: 11px; color: var(--muted); white-space: nowrap; }
 @media (max-width: 900px) { .memb-list { grid-template-columns: 1fr; } }
-.grid.cols-6 { grid-template-columns: repeat(6, 1fr); }
-@media (max-width: 1100px) { .grid.cols-3, .grid.cols-6 { grid-template-columns: 1fr 1fr; } }
+.grid.cols-6 { grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); }
+/* (the old 1100px breakpoint is gone — auto-fit now reflows these at every width) */
 
 .field { display: flex; flex-direction: column; gap: 6px; }
-.field.span-2 { grid-column: span 2; }
+/* A "span-2" field is meant to be full-width. With the grids now fluid (a
+   variable number of columns), "span 2" could span 2-of-3; "1 / -1" makes it
+   span the WHOLE row no matter how many columns auto-fit produced. */
+.field.span-2 { grid-column: 1 / -1; }
 .field label { font-size: 12px; color: var(--muted); font-weight: 600; }
 .field input[type=text], .field input[type=number], .field textarea, .field select {
   background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
@@ -197,8 +209,8 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 
 /* repeatable rows */
 .rows { display: flex; flex-direction: column; gap: 10px; }
-.row-item { display: flex; gap: 10px; align-items: flex-start; }
-.row-item input, .row-item textarea { flex: 1; }
+.row-item { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+.row-item input, .row-item textarea { flex: 1; min-width: 0; }
 .row-item .narrow { flex: none; width: 70px; text-align: center; }
 .icon-btn {
   background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
@@ -245,7 +257,7 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .toast .toast-act:hover { background: rgba(74,222,128,0.12); }
 
 /* orders view */
-.ord-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.ord-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 6px; }
 .ord-top small { color: var(--muted); font-size: 12px; }
 .ord-items { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .ord-line { display: flex; justify-content: space-between; font-size: 14px; color: var(--text); }
@@ -591,7 +603,11 @@ body {
 .floor-wrap { display: flex; gap: 20px; align-items: flex-start; }
 .floor-main { flex: 1; min-width: 0; }
 .floor-side { width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 14px; }
-@media (max-width: 1040px) { .floor-wrap { flex-direction: column; } .floor-side { width: 100%; flex: none; } }
+/* Stack the floor + side panel below 1040px. The !important is required because
+   the side panel carries an inline width:${sideW}px from the drag-to-resize
+   handle, and an inline style would otherwise beat this rule and keep the panel
+   its dragged pixel width instead of going full-width on a narrow screen. */
+@media (max-width: 1040px) { .floor-wrap { flex-direction: column; } .floor-side { width: 100% !important; flex: none !important; } }
 
 /* legend — every state + its colour */
 .floor-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 2px 0 18px; font-size: 12px; color: var(--muted); }
@@ -698,8 +714,12 @@ body {
 .lgcap { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; opacity: .75; }
 
 /* ===================== LOG tab ===================== */
-.logtable { display: flex; flex-direction: column; gap: 4px; max-width: 820px; margin-top: 14px; }
-.logrow { display: grid; grid-template-columns: 1.5fr 0.5fr 0.95fr 1.4fr 0.95fr 0.85fr 1.1fr; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); }
+/* The log is a 7-column grid. On a pane narrower than ~700px those columns —
+   especially the nowrap status/role pills — used to collide and clip under the
+   actions column. Let the table scroll sideways below its comfortable width
+   (min-width on the rows) instead of crushing/hiding data. */
+.logtable { display: flex; flex-direction: column; gap: 4px; max-width: 820px; margin-top: 14px; overflow-x: auto; }
+.logrow { display: grid; grid-template-columns: 1.5fr 0.5fr 0.95fr 1.4fr 0.95fr 0.85fr 1.1fr; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 9px; background: var(--panel); border: 1px solid var(--line); min-width: 680px; }
 .loghead { background: transparent; border: none; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 2px 12px; }
 .logcell { font-size: 13px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .logcell b { display: block; } .logcell small { color: var(--muted); font-size: 11px; }
@@ -860,9 +880,12 @@ body { background: radial-gradient(1100px 560px at 78% -12%, #1d160f 0%, var(--b
   .opt-choice { grid-template-columns: 1fr; }
   .opt-choice .btn.small.danger { height: auto; }
 
-  /* log: the 7-column table can't fit — drop the header and let cells wrap in 2s */
+  /* log: the 7-column table can't fit — drop the header and let cells wrap in 2s.
+     Clear the desktop min-width so the phone stack doesn't trigger a sideways
+     scroll (the horizontal-scroll fallback is only for the mid-width range). */
   .logrow.loghead { display: none; }
-  .logrow { grid-template-columns: 1fr 1fr; }
+  .logrow { grid-template-columns: 1fr 1fr; min-width: 0; }
+  .logtable { overflow-x: visible; }
   .logacts { justify-content: flex-start; }
 }
 
