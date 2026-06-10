@@ -228,11 +228,21 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: var(--panel); border: 1px solid var(--line); color: var(--text);
-  padding: 12px 20px; border-radius: 10px; font-size: 14px; z-index: 100;
+  /* Above everything (panel = 1000, confirm = 1200): a toast is feedback for
+     what you JUST did, so no overlay is ever allowed to hide it. */
+  padding: 12px 20px; border-radius: 10px; font-size: 14px; z-index: 1300;
   box-shadow: 0 10px 30px rgba(0,0,0,.5);
 }
 .toast.ok { border-color: var(--green); }
 .toast.err { border-color: var(--red); }
+/* The toast's optional action button (e.g. UNDO after "Close all") — kept
+   high-contrast so the take-it-back option is impossible to miss. */
+.toast .toast-act {
+  margin-left: 14px; padding: 4px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--green); background: transparent; color: var(--green);
+  font-weight: 700; font-size: 13px; letter-spacing: .04em;
+}
+.toast .toast-act:hover { background: rgba(74,222,128,0.12); }
 
 /* orders view */
 .ord-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
@@ -382,7 +392,11 @@ body {
 
 /* pretty confirm dialog (replaces native window.confirm) */
 .confirm-overlay {
-  position: fixed; inset: 0; z-index: 1000; display: flex; align-items: center; justify-content: center;
+  /* MUST sit above the table panel (z-index 1000): the panel re-renders every
+     second (poll) and re-appends itself to <body>, so with a TIED z-index the
+     newer panel node painted on top and the "Are you sure?" box vanished
+     behind it. A strictly higher layer keeps confirms on top forever. */
+  position: fixed; inset: 0; z-index: 1200; display: flex; align-items: center; justify-content: center;
   background: rgba(0,0,0,0.55); backdrop-filter: blur(5px); opacity: 0; transition: opacity .2s;
 }
 .confirm-overlay.show { opacity: 1; }
@@ -406,6 +420,21 @@ body {
   box-shadow: 0 6px 16px rgba(239,68,68,0.35);
 }
 @media (prefers-reduced-motion: reduce) { .confirm-overlay, .confirm-box { transition: none; } }
+
+/* Floor-wide confirms (Close all) look DELIBERATELY different from the routine
+   one-table popups: red ring, red-tinted glass, bigger message. Muscle memory
+   built on the everyday confirm should hit the brakes when it sees this one. */
+.confirm-overlay.floorwide { background: rgba(60,0,0,0.5); }
+.confirm-overlay.floorwide .confirm-box {
+  border: 2px solid var(--red);
+  box-shadow: 0 0 0 5px rgba(239,68,68,0.18), 0 30px 70px rgba(0,0,0,0.7);
+}
+.confirm-overlay.floorwide .confirm-msg { font-size: 17px; font-weight: 700; }
+.confirm-overlay.floorwide .confirm-icon { transform: scale(1.15); }
+
+/* The side panel's whole-floor button row (Open all / Close all). */
+.fc-bulk { display: flex; gap: 8px; }
+.fc-bulk .btn { flex: 1; }
 
 /* Payment drives the whole order box colour: unpaid = warm red/brown, paid = green.
    (Higher-specificity + later than the status-colour rules, so it wins.) */
@@ -604,6 +633,21 @@ body {
 .ftb.cart { background: rgba(96,165,250,0.18); border-color: rgba(96,165,250,0.45); color: #9cc4fb; } /* table is building a cart */
 .ft-label { margin-top: auto; padding-top: 10px; font-weight: 700; font-size: 13.5px; color: color-mix(in srgb, var(--c) 72%, var(--text)); }
 .ft-meta { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+/* Floor skeleton — shown for the brief moment between opening the Tables tab and
+   the live board arriving, so tiles don't flash "Free" then pop to "Open". Same
+   shimmer feel as the customer menu's loading cards, tuned to the dark editor. */
+.ftile-skel { pointer-events: none; cursor: default; }
+.ftile-skel:hover { transform: none; box-shadow: none; }
+.ftile-skel .sk-num, .ftile-skel .sk-lbl, .ftile-skel .sk-meta {
+  background: linear-gradient(100deg, rgba(245,236,221,0.04) 30%, rgba(245,236,221,0.11) 50%, rgba(245,236,221,0.04) 70%);
+  background-size: 220px 100%; animation: edSkelShimmer 1.2s linear infinite; border-radius: 8px;
+}
+.ftile-skel .sk-num { width: 32px; height: 32px; border-radius: 9px; }
+.ftile-skel .sk-lbl { width: 62%; height: 13px; margin-top: auto; }
+.ftile-skel .sk-meta { width: 46%; height: 10px; margin-top: 8px; }
+@keyframes edSkelShimmer { 0% { background-position: -110px 0; } 100% { background-position: 110px 0; } }
+@media (prefers-reduced-motion: reduce) { .ftile-skel .sk-num, .ftile-skel .sk-lbl, .ftile-skel .sk-meta { animation: none; } }
 
 /* side control cards */
 .fc-card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }

@@ -40,6 +40,7 @@ const state = {
   search: "",
   catFilter: "", // Dishes tab: selected category slug to filter by ("" = All)
   board: { sessions: [], members: [], items: [], requests: [], blocklist: [] }, // v2 sessions live board
+  boardLoaded: false, // false until the live board arrives once → drives the floor skeleton (no "all Free" flash on load)
   openSess: null, // table number whose session modal is open
   users: { members: [], customers: [], blocklist: [] }, // Log tab data
 };
@@ -88,24 +89,38 @@ function setPath(obj, path, val) {
 // toast: pop a small message at the corner of the screen (green for success,
 // red for an error) and hide it again after a couple of seconds. toastTimer
 // remembers the pending "hide it" timer so a new toast resets the clock.
+// Optionally takes an action button (e.g. { label: "UNDO", fn: ... }) and a
+// custom lifetime in ms — the Gmail-style pattern for bulk actions: do the
+// thing instantly, but give the owner a few seconds to take it back.
 let toastTimer;
-function toast(msg, type = "ok") {
+function toast(msg, type = "ok", action, ms) {
   const t = $("#toast");
   t.textContent = msg;
+  if (action) {
+    const b = document.createElement("button");
+    b.className = "toast-act";
+    b.textContent = action.label;
+    // Clicking the action hides the toast first so it can't be clicked twice.
+    b.onclick = () => { t.hidden = true; clearTimeout(toastTimer); action.fn(); };
+    t.appendChild(b);
+  }
   t.className = "toast " + type;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), 2600);
+  toastTimer = setTimeout(() => (t.hidden = true), ms || 2600);
 }
 
 // Pretty in-app confirm (replaces the ugly native window.confirm).
 // It builds a little "Are you sure?" pop-up and returns a Promise that resolves
 // to true (user clicked the confirm button) or false (cancel / Escape / click
 // outside). Calling code does: if (await confirmDialog(...)) { ...do it... }.
-function confirmDialog(message, confirmLabel = "Confirm") {
+function confirmDialog(message, confirmLabel = "Confirm", opts = {}) {
   return new Promise((resolve) => {
     const wrap = document.createElement("div");
-    wrap.className = "confirm-overlay";
+    // opts.floorwide marks confirms that hit EVERY table at once (Close all).
+    // They get a deliberately different, scarier look so muscle-memory built on
+    // the routine one-table popups doesn't click through this one blindly.
+    wrap.className = "confirm-overlay" + (opts.floorwide ? " floorwide" : "");
     wrap.innerHTML = `
       <div class="confirm-box">
         <div class="confirm-icon"><i class="fas fa-triangle-exclamation"></i></div>
@@ -124,9 +139,18 @@ function confirmDialog(message, confirmLabel = "Confirm") {
       setTimeout(() => wrap.remove(), 200);
       resolve(val);
     };
-    wrap.querySelector(".confirm-cancel").onclick = () => close(false);
-    wrap.querySelector(".confirm-ok").onclick = () => close(true);
-    wrap.onclick = (e) => { if (e.target === wrap) close(false); };
+    // Speed-click guard: the dialog pops up right under the pointer, so the
+    // tail of a fast double-click lands ~100ms later on the backdrop (or even
+    // on the Cancel/Confirm buttons). That used to silently cancel the dialog
+    // — making it feel like the app asked "are you sure?" again and again —
+    // or could instantly confirm something the owner never read. So every
+    // click is ignored until the dialog has been on screen for 350ms (humans
+    // need longer than that to read it anyway). Escape stays instant.
+    const openedAt = Date.now();
+    const settled = () => Date.now() - openedAt > 350;
+    wrap.querySelector(".confirm-cancel").onclick = () => { if (settled()) close(false); };
+    wrap.querySelector(".confirm-ok").onclick = () => { if (settled()) close(true); };
+    wrap.onclick = (e) => { if (e.target === wrap && settled()) close(false); };
     document.addEventListener("keydown", function esc2(e) {
       if (e.key === "Escape") { close(false); document.removeEventListener("keydown", esc2); }
     });
@@ -1210,8 +1234,21 @@ async function loadSessions(fromPoll) {
   // double round-trip).
   if (!fromPoll) {
     try {
-      const [board, orders, calls] = await Promise.all([api("GET", "/sessions"), api("GET", "/orders"), api("GET", "/calls")]);
-      state.board = board; state.data.orders = orders; state.data.calls = calls;
+      let [board, orders, calls] = await Promise.all([api("GET", "/sessions"), api("GET", "/orders"), api("GET", "/calls")]);
+      // Same shields the 1-second poll uses (see pollOrders). One action's
+      // refresh must not wipe ANOTHER action's optimistic state while that
+      // save is still travelling — e.g. opening tables 1, 2, 3 quickly:
+      // table 1's refresh used to land before the server had processed
+      // table 3, flickering tile 3 back to "Free" for a split second.
+      // Keep local order rows whose saves are in flight, keep optimistic
+      // deletes gone, and only take the server's board once NO floor action
+      // is mid-save (the last one to finish reconciles everything).
+      orders = orders
+        .filter((o) => !pendingDeletes.has(o.id))
+        .map((o) => (pendingOrderOps.has(o.id) ? ((state.data.orders || []).find((x) => x.id === o.id) || o) : o));
+      if (!floorOpsInFlight) state.board = board;
+      state.data.orders = orders; state.data.calls = calls;
+      state.boardLoaded = true; // the live board has arrived at least once → real tiles, not the skeleton
     } catch (e) {
       toast("Could not load tables: " + e.message, "err");
       return;
@@ -1281,11 +1318,24 @@ async function openAllTables() {
 async function closeAllTables() {
   const open = (state.board.sessions || []).filter((s) => s.status === "open");
   if (!open.length) return toast("No open tables", "ok");
-  if (!(await confirmDialog(`Close ALL ${open.length} open table${open.length > 1 ? "s" : ""}? Guests at them can't order until reopened.`, "Close all"))) return;
+  // Floor-wide = the scary red confirm (see confirmDialog), so it can't be
+  // mistaken for the routine one-table popup when speed-clicking.
+  if (!(await confirmDialog(`Close ALL ${open.length} open table${open.length > 1 ? "s" : ""}? Guests at them can't order until reopened.`, `Close all ${open.length}`, { floorwide: true }))) return;
+  const tables = open.map((s) => String(s.table_number)); // remembered for UNDO
   const results = await Promise.allSettled(open.map((s) => api("POST", "/sessions/" + s.id + "/close")));
   const failed = results.filter((r) => r.status === "rejected").length;
   await loadSessions();
-  toast(failed ? `Closed ${open.length - failed}, ${failed} failed` : `Closed ${open.length} table${open.length > 1 ? "s" : ""}`, failed ? "err" : "ok");
+  if (failed) return toast(`Closed ${open.length - failed}, ${failed} failed`, "err");
+  // Gmail-style safety net: 8 seconds to take it back. UNDO reopens the same
+  // table numbers (fresh sessions — guests who were seated stay disconnected).
+  toast(`Closed ${tables.length} table${tables.length > 1 ? "s" : ""}`, "ok", {
+    label: "UNDO",
+    fn: async () => {
+      await Promise.allSettled(tables.map((tb) => api("POST", "/sessions/open", { table: tb })));
+      await loadSessions();
+      toast(`Reopened ${tables.length} table${tables.length > 1 ? "s" : ""}`, "ok");
+    },
+  }, 8000);
 }
 // closeSession: end a table's session (after confirming).
 async function closeSession(id) {
@@ -1476,6 +1526,19 @@ function floorHtml() {
   const LEG = [["free", "Free"], ["req", "Wants in"], ["seated", "Seated"], ["new", "New order"], ["prep", "Preparing"]];
   const legend = `<div class="floor-legend"><span class="lgcap">inside:</span>${LEG.map(([k, v]) => `<span class="lgi"><i class="ldot ldot-${k}"></i>${v}</span>`).join("")}<span class="lgi"><i class="ldot ldot-call">🔔</i>called</span><span class="lgcap">outline:</span><span class="lgi"><i class="lring lring-red"></i>unpaid</span><span class="lgi"><i class="lring lring-green"></i>paid</span></div>`;
 
+  // FIRST PAINT before the live board has arrived: show a shimmer skeleton sized
+  // to the real table count, instead of briefly drawing every table as "Free"
+  // (that looked like the whole floor had reset on every refresh). The board
+  // loads a moment later — boardLoaded flips true — and the real tiles replace
+  // this. Mirrors the menu's loading skeleton so the two screens feel the same.
+  if (!state.boardLoaded) {
+    let skel = "";
+    for (let i = 1; i <= n; i++) {
+      skel += `<div class="ftile ftile-skel" aria-hidden="true"><div class="sk-num"></div><div class="sk-lbl"></div><div class="sk-meta"></div></div>`;
+    }
+    return `<div class="floor-wrap"><div class="floor-main"><div class="ed-head"><h2>Tables <span class="sub">· live floor</span></h2><button class="btn" id="refreshFloor">↻ Refresh</button></div>${legend}<div class="ftile-grid">${skel}</div></div></div>`;
+  }
+
   let tiles = "";
   for (let i = 1; i <= n; i++) {
     const { st, label, meta, badges, pay, done, hasNew, hasCall } = tableTileState(i); // everything this tile needs
@@ -1495,12 +1558,11 @@ function floorHtml() {
         <div class="ft-label">${esc(label)}</div><div class="ft-meta">${esc(meta)}</div>
         ${quick ? `<div class="ft-quick">${quick}</div>` : ""}</div>`;
   }
-  // Bulk quick actions (owner request 2026-06-10): seat the whole floor or
-  // clear it in one tap, right in the header. Only shown when sessions are on.
-  const bulkBtns = sessionsOn
-    ? `<button class="btn small" id="floorOpenAll">⬆ Open all</button><button class="btn small" id="floorCloseAll">⬇ Close all</button>`
-    : "";
-  const main = `<div class="floor-main"><div class="ed-head"><h2>Tables <span class="sub">· live floor</span></h2>${bulkBtns}<button class="btn" id="refreshFloor">↻ Refresh</button></div>${legend}<div class="ftile-grid">${tiles}</div></div>`;
+  // The header keeps ONLY the safe Refresh button. Open all / Close all used to
+  // sit right beside it, styled the same — one fast click aimed at Refresh once
+  // closed the entire floor (owner hit this 2026-06-11). They now live in the
+  // side panel's "Dining sessions" card, well away from the speed-click zone.
+  const main = `<div class="floor-main"><div class="ed-head"><h2>Tables <span class="sub">· live floor</span></h2><button class="btn" id="refreshFloor">↻ Refresh</button></div>${legend}<div class="ftile-grid">${tiles}</div></div>`;
 
   // side panel — session controls + café location + requests + blocklist (all here, not in General)
   const tgl = (label, key) => `<label class="fc-toggle"><input type="checkbox" data-setting="${key}" ${s[key] ? "checked" : ""}/><span class="fc-sw"></span><span>${label}</span></label>`;
@@ -1508,6 +1570,7 @@ function floorHtml() {
       <h3>Dining sessions</h3>
       ${tgl("System ON", "sessions_enabled")}
       <div class="fc-sub"${sessionsOn ? "" : " hidden"}>${tgl("Require location", "require_location")}${tgl("Require code", "require_otp")}</div>
+      ${sessionsOn ? `<h4>Whole floor</h4><div class="fc-bulk"><button class="btn small" id="floorOpenAll">⬆ Open all</button><button class="btn small danger" id="floorCloseAll">⬇ Close all</button></div>` : ""}
       <h4>Café location</h4>
       <div class="fc-geo">
         <label class="fc-field"><span>Latitude (north–south)</span><input class="sx-input" id="fcLat" placeholder="e.g. 23.0274" value="${s.geo_lat ?? ""}"/></label>
@@ -1773,9 +1836,12 @@ async function acceptTableOrders(t) {
   recv.forEach((o) => { o.status = "preparing"; flipOrderItems(o, "received", "preparing"); opBegin(o.id); });
   floorOpsInFlight++;
   loadSessions(true);
+  // release first, then refresh — see restartTable for why this order matters.
+  let released = false;
+  const release = () => { if (!released) { released = true; floorOpsInFlight--; recv.forEach((o) => opEnd(o.id)); } };
   try { for (const o of recv) await api("POST", "/orders/" + o.id + "/accept"); toast("Order accepted", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); await loadSessions(); } // reload truth on failure
-  finally { floorOpsInFlight--; recv.forEach((o) => opEnd(o.id)); }
+  catch (e) { release(); toast("Failed: " + e.message, "err"); await loadSessions(); } // reload truth on failure
+  finally { release(); }
 }
 // Serve EVERY order on a table at once (the table-wide "mark all served").
 // OPTIMISTIC like accept: every dish row flips to served on screen first.
@@ -1786,9 +1852,12 @@ async function serveAllOrders(t) {
   floorOpsInFlight++;
   loadSessions(true);
   renderTablePanel();
+  // release first, then refresh — see restartTable for why this order matters.
+  let released = false;
+  const release = () => { if (!released) { released = true; floorOpsInFlight--; orders.forEach((o) => opEnd(o.id)); } };
   try { for (const o of orders) await api("POST", "/orders/" + o.id + "/serve-all"); toast("All orders served", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); await loadSessions(); }
-  finally { floorOpsInFlight--; orders.forEach((o) => opEnd(o.id)); }
+  catch (e) { release(); toast("Failed: " + e.message, "err"); await loadSessions(); }
+  finally { release(); }
 }
 // Quick action: mark every open call on a table attended (clears the tile's emoji).
 async function attendTableCalls(t) {
@@ -1814,14 +1883,20 @@ async function restartTable(t) {
   (state.data.orders || []).forEach((o) => { if (ids.includes(o.id)) { o.archived = true; o.status = "served"; opBegin(o.id); } });
   floorOpsInFlight++;
   loadSessions(true);
+  // release: drop our "mid-save" markers BEFORE the reconciling refresh below —
+  // loadSessions only trusts the server's board once nothing is in flight, so
+  // holding the markers through the refresh would delay our own reconcile.
+  let released = false;
+  const release = () => { if (!released) { released = true; floorOpsInFlight--; ids.forEach((id) => opEnd(id)); } };
   try {
     for (const id of ids) await api("PATCH", "/orders/" + id, { archived: true, status: "served" });
     // keep the table OPEN for the next round — open a fresh session if it doesn't have one
     if ((state.data.settings || {}).sessions_enabled && !openSessionForTable(t)) await api("POST", "/sessions/open", { table: String(t) });
+    release();
     await loadSessions();
     toast(`Table ${t} restarted — still open`, "ok");
-  } catch (e) { toast("Could not restart: " + e.message, "err"); await loadSessions(); }
-  finally { floorOpsInFlight--; ids.forEach((id) => opEnd(id)); }
+  } catch (e) { release(); toast("Could not restart: " + e.message, "err"); await loadSessions(); }
+  finally { release(); }
 }
 // CLS: free the table (archive orders + close any open session).
 function closeTableQuick(t) { freeTableAll(t, openSessionForTable(t)); }
@@ -1837,13 +1912,17 @@ async function freeTableAll(t, sess) {
   state.openSess = null; document.querySelector(".sx-modal-overlay")?.remove();
   floorOpsInFlight++;
   loadSessions(true); // instant redraw from local state
+  // release first, then refresh — see restartTable for why this order matters.
+  let released = false;
+  const release = () => { if (!released) { released = true; floorOpsInFlight--; ids.forEach((id) => opEnd(id)); } };
   try {
     for (const id of ids) await api("PATCH", "/orders/" + id, { archived: true });
     if (sess) await api("POST", "/sessions/" + sess.id + "/close");
+    release();
     await loadSessions();
     toast(`Table ${t} freed`, "ok");
-  } catch (e) { toast("Could not free: " + e.message, "err"); await loadSessions(); }
-  finally { floorOpsInFlight--; ids.forEach((id) => opEnd(id)); }
+  } catch (e) { release(); toast("Could not free: " + e.message, "err"); await loadSessions(); }
+  finally { release(); }
 }
 
 // ===================== USERS / LOG =====================
@@ -2053,6 +2132,7 @@ async function pollOrders() {
     board = await api("GET", "/sessions");
     // Don't clobber the board while a floor action's save is still in flight.
     if (!floorOpsInFlight) state.board = board; else board = state.board || {};
+    state.boardLoaded = true; // a poll fetch counts too: we now know the real floor
   } catch { board = state.board || {}; }
 
   // Remember the previous counts, then update to the new ones. The "did it grow?"
