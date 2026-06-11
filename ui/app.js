@@ -764,20 +764,25 @@ function callsHtml() {
 // Calls. The header shows the live counts.
 function ordersHtml() {
   const all = state.data.orders || [];
-  // Live = still on the floor and NOT cancelled. Previous = the bill records:
-  // freed/archived OR cancelled orders (cancels drop straight into Previous).
-  const live = all.filter((o) => !o.archived && o.status !== "cancelled");
-  const previous = all.filter((o) => o.archived || o.status === "cancelled");
-  const active = live.filter((o) => o.status === "received" || o.status === "preparing").length;
+  // Split by DAY: TODAY's orders (live AND already-served — shown together) stay
+  // in the main view; everything from before today, plus anything cancelled or
+  // freed/archived, drops into Previous (the bill records). Each order lands in
+  // exactly one of the two.
+  const startToday = new Date(); startToday.setHours(0, 0, 0, 0);
+  const ts = startToday.getTime();
+  const isToday = (o) => o.created_at && new Date(o.created_at).getTime() >= ts;
+  const today = all.filter((o) => !o.archived && o.status !== "cancelled" && isToday(o));
+  const previous = all.filter((o) => o.archived || o.status === "cancelled" || !isToday(o));
+  const active = today.filter((o) => o.status === "received" || o.status === "preparing").length;
   const callCount = (state.data.calls || []).filter((c) => !c.resolved).length;
-  const view = state.ordersView === "bills" ? "previous" : (state.ordersView || "live"); // "bills" was removed → fold into Previous
+  const view = (state.ordersView === "bills" || state.ordersView === "live") ? (state.ordersView === "bills" ? "previous" : "today") : (state.ordersView || "today"); // map old keys
 
   // Left-bar item: label + a count pill, highlighted when it's the open view.
   const navItem = (key, label, count) =>
     `<button class="ord-nav-item${view === key ? " active" : ""}" data-orders-view="${key}">
        <span>${label}</span>${count ? `<span class="ord-nav-count">${count}</span>` : ""}</button>`;
   const nav = `<aside class="ord-nav">
-      ${navItem("live", "● Live", live.length)}
+      ${navItem("today", "● Today", today.length)}
       ${navItem("previous", "Previous", previous.length)}
       <div class="ord-nav-div"></div>
       ${navItem("calls", "🔔 Calls", callCount)}
@@ -786,10 +791,10 @@ function ordersHtml() {
   let main;
   if (view === "previous") main = ordersPreviousHtml(previous);
   else if (view === "calls") main = ordersCallsHtml();
-  else main = ordersLiveHtml(live);
+  else main = ordersLiveHtml(today);
 
   const head = `<div class="ed-head">
-      <h2>Orders <span class="sub">· ${active} active / ${live.length} live</span></h2>
+      <h2>Orders <span class="sub">· ${active} active / ${today.length} today</span></h2>
       <button class="btn" id="refreshOrders">↻ Refresh</button>
     </div>`;
   return head + `<div class="ord-wrap">${nav}<div class="ord-main">${main}</div></div>`;
@@ -990,11 +995,18 @@ function renderEditor() {
     // Each block below finds a set of buttons by their data-* marker and attaches
     // the click behaviour. (We re-draw the HTML each time, so we re-bind each time.)
     ed.querySelectorAll(".ord-btn[data-act]").forEach((btn) => {
-      // Cancelling goes through the confirm + offer-to-free flow; other status
-      // moves (accept / serve / reopen) are instant as before.
-      btn.onclick = () => (btn.dataset.act === "cancelled"
-        ? cancelOrder(btn.dataset.id)
-        : setOrderStatus(btn.dataset.id, btn.dataset.act));
+      btn.onclick = () => {
+        const id = btn.dataset.id, act = btn.dataset.act;
+        const o = (state.data.orders || []).find((x) => x.id === id);
+        if (act === "cancelled") return cancelOrder(id);
+        // Accept (received → preparing) and Serve-all must flip the per-dish
+        // order_items too, not just orders.status — otherwise the dishes stay
+        // "received" and the table panel can't serve them (the glitch). Route
+        // these through the /accept and /serve-all endpoints that do both.
+        if (act === "preparing" && o && o.status === "received") return acceptOrder(id);
+        if (act === "served") return serveAllOrder(id);
+        setOrderStatus(id, act); // reopen / restore (no per-dish change needed)
+      };
     });
     ed.querySelectorAll(".ord-del[data-del]").forEach((btn) => {
       btn.onclick = async () => {
@@ -1923,15 +1935,28 @@ async function legacyItemStatus(orderId, index, status) {
   } catch (e) { toast("Failed: " + e.message, "err"); }
 }
 
-// Accept a whole order (received -> preparing). After this, dishes are served one by one.
+// Accept a whole order (received -> preparing). Flips the order AND its dishes,
+// optimistically + poll-shielded so it can't flicker back mid-accept.
 async function acceptOrder(orderId) {
-  try { await api("POST", "/orders/" + orderId + "/accept"); await loadSessions(); toast("Order accepted → preparing", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  const o = (state.data.orders || []).find((x) => x.id === orderId);
+  if (o) { o.status = "preparing"; flipOrderItems(o, "received", "preparing"); opBegin(o.id); }
+  floorOpsInFlight++;
+  loadSessions(true); renderTablePanel();
+  let released = false;
+  const release = () => { if (!released) { released = true; floorOpsInFlight--; if (o) opEnd(o.id); } };
+  try { await api("POST", "/orders/" + orderId + "/accept"); release(); await loadSessions(); toast("Order accepted → preparing", "ok"); }
+  catch (e) { release(); toast("Failed: " + e.message, "err"); await loadSessions(); }
 }
-// Serve every dish on an order at once → order complete.
+// Serve every dish on an order at once → order complete. Optimistic + shielded.
 async function serveAllOrder(orderId) {
-  try { await api("POST", "/orders/" + orderId + "/serve-all"); await loadSessions(); toast("All items served", "ok"); }
-  catch (e) { toast("Failed: " + e.message, "err"); }
+  const o = (state.data.orders || []).find((x) => x.id === orderId);
+  if (o) { o.status = "served"; flipOrderItems(o, null, "served"); opBegin(o.id); }
+  floorOpsInFlight++;
+  loadSessions(true); renderTablePanel();
+  let released = false;
+  const release = () => { if (!released) { released = true; floorOpsInFlight--; if (o) opEnd(o.id); } };
+  try { await api("POST", "/orders/" + orderId + "/serve-all"); release(); await loadSessions(); toast("All items served", "ok"); }
+  catch (e) { release(); toast("Failed: " + e.message, "err"); await loadSessions(); }
 }
 // Quick action: accept new orders on a table. If there's only ONE new order,
 // accept it in one tap. If there are SEVERAL, don't bulk-accept — open the detail
