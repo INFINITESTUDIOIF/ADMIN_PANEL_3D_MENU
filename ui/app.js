@@ -752,17 +752,17 @@ function callsHtml() {
 }
 
 // ordersHtml: the Orders tab. A LEFT BAR switches the main panel between Live
-// orders, Previous (freed) orders, per-table Bills, and waiter Calls — so each
-// view is focused instead of one long scroll. The header shows the live counts.
+// orders, Previous orders (which ARE the bills — past + cancelled), and waiter
+// Calls. The header shows the live counts.
 function ordersHtml() {
   const all = state.data.orders || [];
-  const live = all.filter((o) => !o.archived);
-  const freed = all.filter((o) => o.archived);
+  // Live = still on the floor and NOT cancelled. Previous = the bill records:
+  // freed/archived OR cancelled orders (cancels drop straight into Previous).
+  const live = all.filter((o) => !o.archived && o.status !== "cancelled");
+  const previous = all.filter((o) => o.archived || o.status === "cancelled");
   const active = live.filter((o) => o.status === "received" || o.status === "preparing").length;
   const callCount = (state.data.calls || []).filter((c) => !c.resolved).length;
-  // Distinct tables that currently have live orders — one consolidated bill each.
-  const billTables = [...new Set(live.map((o) => (o.table_number || "").trim()).filter(Boolean))];
-  const view = state.ordersView || "live";
+  const view = state.ordersView === "bills" ? "previous" : (state.ordersView || "live"); // "bills" was removed → fold into Previous
 
   // Left-bar item: label + a count pill, highlighted when it's the open view.
   const navItem = (key, label, count) =>
@@ -770,15 +770,13 @@ function ordersHtml() {
        <span>${label}</span>${count ? `<span class="ord-nav-count">${count}</span>` : ""}</button>`;
   const nav = `<aside class="ord-nav">
       ${navItem("live", "● Live", live.length)}
-      ${navItem("previous", "Previous", freed.length)}
-      ${navItem("bills", "Bills", billTables.length)}
+      ${navItem("previous", "Previous", previous.length)}
       <div class="ord-nav-div"></div>
       ${navItem("calls", "🔔 Calls", callCount)}
     </aside>`;
 
   let main;
-  if (view === "previous") main = ordersPreviousHtml(freed);
-  else if (view === "bills") main = ordersBillsHtml(live, billTables);
+  if (view === "previous") main = ordersPreviousHtml(previous);
   else if (view === "calls") main = ordersCallsHtml();
   else main = ordersLiveHtml(live);
 
@@ -810,40 +808,18 @@ function ordersLiveHtml(live) {
   return note + bulk + `<div class="ord-grid">${orders.map((o) => orderCardHtml(o)).join("")}</div>`;
 }
 
-// PREVIOUS view: freed/cleared orders kept in records, newest first, each with a
-// "restore to floor" action and a "clear all" button.
-function ordersPreviousHtml(freed) {
-  if (!freed.length) return `<div class="empty">No previous orders yet. Freed tables land here.</div>`;
-  const sorted = [...freed].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
-  return `<div class="ord-section-divider"><h3>✓ Previous orders <span class="sub">· ${freed.length}</span></h3>
-       <span class="ord-section-hint">Settled &amp; cleared off the floor — kept in records.</span>
+// PREVIOUS view: the bill records — freed/cleared orders AND cancelled orders,
+// newest first. Each archived order gets an un-archive "restore"; each cancelled
+// order gets a status-restore (back to received). This is where bills live now.
+function ordersPreviousHtml(previous) {
+  if (!previous.length) return `<div class="empty">No previous orders yet. Freed &amp; cancelled orders land here as bills.</div>`;
+  const sorted = [...previous].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  // freed=true for archived rows (restore = un-archive); freed=false for a
+  // cancelled-but-not-archived row (its card offers a status restore instead).
+  return `<div class="ord-section-divider"><h3>✓ Previous orders <span class="sub">· ${previous.length}</span></h3>
+       <span class="ord-section-hint">Past bills — settled, freed, or cancelled. Kept in records.</span>
        <button class="btn danger" id="clearFreed">🗑 Clear all</button></div>
-     <div class="ord-grid ord-grid-freed">${sorted.map((o) => orderCardHtml(o, true)).join("")}</div>`;
-}
-
-// BILLS view: one consolidated bill per table — every dish across that table's
-// orders (with its customizations), the running total, and what's paid vs due.
-function ordersBillsHtml(live, tables) {
-  if (!tables.length) return `<div class="empty">No open bills. A table's bill appears here once it has orders.</div>`;
-  const cards = tables.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map((t) => {
-    const os = live.filter((o) => (o.table_number || "").trim() === t && o.status !== "cancelled");
-    // Flatten every dish across the table's orders into one bill list.
-    const lines = os.flatMap((o) => (o.items || []).map((i) => `<div class="ord-line"><span>${esc(i.title)} <b>×${esc(i.qty)}</b>${itemDetailLine(i)}</span><span>${esc(i.price)}</span></div>`)).join("");
-    const total = os.reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
-    const due = os.filter((o) => o.payment_status !== "paid").reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
-    const unpaidIds = os.filter((o) => o.payment_status !== "paid").map((o) => o.id);
-    const settle = unpaidIds.length
-      ? `<button class="ord-btn serve" data-pay-table="${esc(unpaidIds.join(","))}">💳 Mark whole bill paid</button>`
-      : `<button class="ord-btn ghost" data-free-table="${esc(t)}">✓ Free table</button>`;
-    return `<div class="ord-card bill-card${due > 0 ? " is-due" : " is-paid"}">
-        <div class="ord-card-head"><h3>Table ${esc(t)}</h3><span class="ord-pill ${due > 0 ? "received" : "served"}">${due > 0 ? "Unpaid" : "Paid"}</span></div>
-        <div class="ord-items">${lines}</div>
-        <div class="ord-total"><span>Total · ${os.length} order${os.length !== 1 ? "s" : ""}</span><span>${inr(total)}</span></div>
-        ${due > 0 ? `<div class="bill-due">Due <b>${inr(due)}</b></div>` : ""}
-        <div class="ord-actions">${settle}</div>
-      </div>`;
-  }).join("");
-  return `<div class="ord-grid">${cards}</div>`;
+     <div class="ord-grid ord-grid-freed">${sorted.map((o) => orderCardHtml(o, !!o.archived)).join("")}</div>`;
 }
 
 // CALLS view: the live waiter-call list (water/cutlery/bill…), or an empty note.
