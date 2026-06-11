@@ -904,6 +904,20 @@ async function setOrderStatus(id, status) {
   }
 }
 
+// cancelOrder: void one order (after confirming). If cancelling it leaves the
+// table with NO active orders, offer to free the table in the same flow — so a
+// cancelled, empty table doesn't sit open by mistake.
+async function cancelOrder(id) {
+  if (!(await confirmDialog("Cancel this order? It will be voided — no charge to the guest.", "Cancel order"))) return;
+  await setOrderStatus(id, "cancelled");
+  const o = (state.data.orders || []).find((x) => x.id === id);
+  const t = (o && o.table_number ? o.table_number : "").trim();
+  if (!t) return;
+  // Any non-cancelled, non-archived order still live at this table?
+  const stillActive = (state.data.orders || []).some((x) => !x.archived && (x.table_number || "").trim() === t && x.status !== "cancelled");
+  if (!stillActive && (await confirmDialog(`Table ${t} has no active orders left. Free the table?`, "Free table"))) freeTable(t);
+}
+
 // deleteOrders: permanently delete orders — a single one, a selected batch, or
 // every order (all=true). OPTIMISTIC: the cards vanish instantly; the server
 // catches up in the background (and the rows return + an error shows if it
@@ -992,7 +1006,11 @@ function renderEditor() {
     // Each block below finds a set of buttons by their data-* marker and attaches
     // the click behaviour. (We re-draw the HTML each time, so we re-bind each time.)
     ed.querySelectorAll(".ord-btn[data-act]").forEach((btn) => {
-      btn.onclick = () => setOrderStatus(btn.dataset.id, btn.dataset.act);
+      // Cancelling goes through the confirm + offer-to-free flow; other status
+      // moves (accept / serve / reopen) are instant as before.
+      btn.onclick = () => (btn.dataset.act === "cancelled"
+        ? cancelOrder(btn.dataset.id)
+        : setOrderStatus(btn.dataset.id, btn.dataset.act));
     });
     ed.querySelectorAll(".ord-del[data-del]").forEach((btn) => {
       btn.onclick = async () => {
