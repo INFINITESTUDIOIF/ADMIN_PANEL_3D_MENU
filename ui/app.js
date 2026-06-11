@@ -1432,8 +1432,28 @@ async function closeAllTables() {
 // closeSession: end a table's session (after confirming).
 async function closeSession(id) {
   if (!(await confirmDialog("Close this session? Guests at this table can no longer order or call until it's reopened.", "Close session"))) return;
-  try { await api("POST", "/sessions/" + id + "/close"); state.openSess = null; document.querySelector(".sx-modal-overlay")?.remove(); await loadSessions(); toast("Session closed", "ok"); }
-  catch (e) { toast("Could not close: " + e.message, "err"); }
+  // Which table is this? We archive its orders too, so closing clears the floor.
+  const sess = (state.board.sessions || []).find((s) => s.id === id);
+  const t = sess ? String(sess.table_number).trim() : null;
+  try {
+    await api("POST", "/sessions/" + id + "/close");
+    // Closing the table clears its orders OFF the floor. UNFINISHED orders
+    // (received/preparing) are CANCELLED — the meal's over, they won't be made,
+    // and the guest's app then shows "Order cancelled". Already-SERVED orders are
+    // kept as completed bills. Either way they're archived → Previous orders, and
+    // the tile goes back to Free (the bug was a closed table still showing them).
+    if (t) {
+      const live = (state.data.orders || []).filter((o) => !o.archived && (o.table_number || "").trim() === t);
+      for (const o of live) {
+        const patch = o.status === "served" ? { archived: true } : { status: "cancelled", archived: true };
+        await api("PATCH", "/orders/" + o.id, patch);
+        o.archived = true; if (o.status !== "served") o.status = "cancelled";
+      }
+    }
+    state.openSess = null; document.querySelector(".sx-modal-overlay")?.remove();
+    await loadSessions();
+    toast("Table closed — bill moved to Previous", "ok");
+  } catch (e) { toast("Could not close: " + e.message, "err"); }
 }
 // setSessAutoApprove: turn on/off "let new joiners in automatically" for a table.
 async function setSessAutoApprove(id, value) {
