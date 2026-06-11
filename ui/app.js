@@ -265,7 +265,7 @@ function renderList() {
         `<li class="list-item ${active ? "active" : ""} ${hidden ? "hidden-row" : ""}">
           ${thumb}
           <div class="meta">
-            <b>${esc(recLabel(r))}${hidden ? '<span class="badge-off">hidden</span>' : ""}</b>
+            <b>${esc(recLabel(r))}${state.tab === "items" && r.dish_no != null ? ` <span class="dish-no">#${esc(String(r.dish_no))}</span>` : ""}${hidden ? '<span class="badge-off">hidden</span>' : ""}</b>
             <small>${esc(recKey(r) || "")}</small>
           </div>
         </li>`
@@ -656,6 +656,14 @@ function itemDetailLine(it) {
   return parts.length ? `<div class="ord-line-opts">${parts.join(" · ")}</div>` : "";
 }
 
+// dishNoTag: the editor-only "#N" dish code shown next to an ordered dish. Order
+// rows store only the title, so we look the dish up by title to find its dish_no.
+// Customer-facing screens never call this — it's editor staff reference only.
+function dishNoTag(title) {
+  const d = (state.data.items || []).find((m) => (m.title || "") === title);
+  return d && d.dish_no != null ? ` <span class="dish-no">#${esc(String(d.dish_no))}</span>` : "";
+}
+
 // orderCardHtml: build the big card for ONE order in the Orders tab — its items,
 // allergy note, total, payment pill, and the action buttons that fit its current
 // stage. `freed` = true means it's an archived/cleared order shown in the lower
@@ -666,7 +674,7 @@ function orderCardHtml(o, freed = false) {
   const when = o.created_at ? new Date(o.created_at).toLocaleString() : ""; // friendly date/time
   // Build one line per item, including any chosen options, "NO …" removals, and notes.
   const items = (o.items || [])
-    .map((i) => `<div class="ord-line"><span>${esc(i.title)} <b>×${esc(i.qty)}</b>${itemDetailLine(i)}</span><span>${esc(i.price)}</span></div>`)
+    .map((i) => `<div class="ord-line"><span>${esc(i.title)}${dishNoTag(i.title)} <b>×${esc(i.qty)}</b>${itemDetailLine(i)}</span><span>${esc(i.price)}</span></div>`)
     .join("");
   const allergy = (o.allergies || []).length
     ? `<div class="ord-allergy">⚠ Avoid: ${o.allergies.map(esc).join(", ")}</div>`
@@ -1791,7 +1799,7 @@ function itemRowHtml(row) {
   } else if (row.status === "served") {
     btn = `<span class="sx-served">✓ served</span>`;
   }
-  return `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill ${esc(row.status)}">${esc(row.status)}</span> ${esc(row.title)} ×${esc(row.qty)}${itemDetailLine(row)}</div><div>${btn}</div></div>`;
+  return `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill ${esc(row.status)}">${esc(row.status)}</span> ${esc(row.title)}${dishNoTag(row.title)} ×${esc(row.qty)}${itemDetailLine(row)}</div><div>${btn}</div></div>`;
 }
 
 // renderTablePanel: draw the big "do everything for this table" pop-up — guests,
@@ -1855,7 +1863,7 @@ function renderTablePanel() {
       let body;
       if (!accepted) {
         // whole-order accept first; dishes are listed but not yet individually actionable
-        body = orderItemRows(o).map((r) => `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill received">received</span> ${esc(r.title)} ×${esc(r.qty)}${itemDetailLine(r)}</div></div>`).join("")
+        body = orderItemRows(o).map((r) => `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill received">received</span> ${esc(r.title)}${dishNoTag(r.title)} ×${esc(r.qty)}${itemDetailLine(r)}</div></div>`).join("")
           + `<button class="btn small primary tp-accept" data-accept="${esc(o.id)}">✓ Accept &amp; prepare order</button>`;
       } else {
         // accepted → serve each dish one at a time, or serve everything at once
