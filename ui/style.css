@@ -276,8 +276,37 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 }
 .ord-grid {
   display: grid; gap: 16px;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
 }
+
+/* Orders tab: a left-bar nav beside the main panel. Stacks to a horizontal
+   chip row on phones so nothing runs off the edge. */
+.ord-wrap { display: flex; gap: 18px; align-items: flex-start; }
+.ord-nav { flex: 0 0 168px; display: flex; flex-direction: column; gap: 6px; }
+.ord-nav-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%;
+  padding: 10px 14px; border-radius: 12px; border: 1px solid transparent;
+  background: var(--panel-2); color: var(--muted); cursor: pointer;
+  font-size: 14px; font-weight: 600; text-align: left; transition: .15s;
+}
+.ord-nav-item:hover { color: var(--text); border-color: color-mix(in srgb, var(--gold) 35%, var(--line)); }
+.ord-nav-item.active { background: var(--gold); color: #2a1d0c; border-color: var(--gold); }
+.ord-nav-count { min-width: 22px; text-align: center; font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(0,0,0,0.22); }
+.ord-nav-div { height: 1px; background: var(--line); margin: 6px 4px; }
+.ord-main { flex: 1; min-width: 0; }
+
+/* Consolidated per-table bill card (Bills view). */
+.ord-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.ord-card-head h3 { margin: 0; font-size: 17px; }
+.bill-card.is-due { border-color: color-mix(in srgb, var(--gold) 50%, var(--line)); }
+.bill-due { margin-top: 8px; font-size: 14px; color: var(--gold); text-align: right; }
+
+@media (max-width: 760px) {
+  .ord-wrap { flex-direction: column; }
+  .ord-nav { flex: none; width: 100%; flex-direction: row; flex-wrap: wrap; }
+  .ord-nav-item { width: auto; flex: 1 1 auto; }
+}
+
 .ord-card { margin-bottom: 0; position: relative; transition: border-color .2s, opacity .2s; }
 .ord-card.ord-received { border-color: color-mix(in srgb, var(--gold) 55%, var(--line)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--gold) 25%, transparent); }
 .ord-card.ord-preparing { border-color: color-mix(in srgb, #e8a13c 55%, var(--line)); }

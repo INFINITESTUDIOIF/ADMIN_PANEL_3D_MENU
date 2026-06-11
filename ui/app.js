@@ -42,6 +42,7 @@ const state = {
   board: { sessions: [], members: [], items: [], requests: [], blocklist: [] }, // v2 sessions live board
   boardLoaded: false, // false until the live board arrives once → drives the floor skeleton (no "all Free" flash on load)
   openSess: null, // table number whose session modal is open
+  ordersView: "live", // Orders tab left-bar selection: live | previous | bills | calls
   users: { members: [], customers: [], blocklist: [] }, // Log tab data
 };
 
@@ -642,6 +643,19 @@ const STATUS_META = {
 // STATUS_RANK: a sort order so the Orders list shows New first, then Preparing, etc.
 const STATUS_RANK = { received: 0, preparing: 1, served: 2, cancelled: 3 };
 
+// itemDetailLine: the small sub-line under a dish showing EVERYTHING the guest
+// chose — picked options ("Large · Oat milk · Extra shot"), removed/allergen
+// ingredients ("NO DAIRY"), and any note ("'less ice'"). Shared by the order
+// cards, the per-table bill, AND the table detail popup so the kitchen always
+// sees exactly what to make. Returns "" when a dish is plain (nothing to show).
+function itemDetailLine(it) {
+  const parts = [];
+  if (Array.isArray(it.options) && it.options.length) parts.push(it.options.map((o) => esc(o.label)).join(" · "));
+  if (Array.isArray(it.removed) && it.removed.length) parts.push("NO " + it.removed.map((r) => esc(r)).join(", ").toUpperCase());
+  if (it.note) parts.push("“" + esc(it.note) + "”");
+  return parts.length ? `<div class="ord-line-opts">${parts.join(" · ")}</div>` : "";
+}
+
 // orderCardHtml: build the big card for ONE order in the Orders tab — its items,
 // allergy note, total, payment pill, and the action buttons that fit its current
 // stage. `freed` = true means it's an archived/cleared order shown in the lower
@@ -652,14 +666,7 @@ function orderCardHtml(o, freed = false) {
   const when = o.created_at ? new Date(o.created_at).toLocaleString() : ""; // friendly date/time
   // Build one line per item, including any chosen options, "NO …" removals, and notes.
   const items = (o.items || [])
-    .map((i) => {
-      const parts = [];
-      if (Array.isArray(i.options) && i.options.length) parts.push(i.options.map((o) => esc(o.label)).join(", "));
-      if (Array.isArray(i.removed) && i.removed.length) parts.push("NO " + i.removed.map((r) => esc(r)).join(", ").toUpperCase());
-      if (i.note) parts.push("“" + esc(i.note) + "”");
-      const extra = parts.length ? `<div class="ord-line-opts">${parts.join(" · ")}</div>` : "";
-      return `<div class="ord-line"><span>${esc(i.title)} <b>×${esc(i.qty)}</b>${extra}</span><span>${esc(i.price)}</span></div>`;
-    })
+    .map((i) => `<div class="ord-line"><span>${esc(i.title)} <b>×${esc(i.qty)}</b>${itemDetailLine(i)}</span><span>${esc(i.price)}</span></div>`)
     .join("");
   const allergy = (o.allergies || []).length
     ? `<div class="ord-allergy">⚠ Avoid: ${o.allergies.map(esc).join(", ")}</div>`
@@ -744,43 +751,106 @@ function callsHtml() {
   return `<div class="calls-panel"><h3>🔔 Waiter calls (${calls.length})</h3>${rows}</div>`;
 }
 
-// ordersHtml: the whole Orders tab — pending waiter calls, a "money still owed"
-// banner, every live order card, and a "Freed tables" section at the bottom.
+// ordersHtml: the Orders tab. A LEFT BAR switches the main panel between Live
+// orders, Previous (freed) orders, per-table Bills, and waiter Calls — so each
+// view is focused instead of one long scroll. The header shows the live counts.
 function ordersHtml() {
   const all = state.data.orders || [];
-  // Live orders, sorted New → Preparing → Served → Cancelled.
-  const orders = all
-    .filter((o) => !o.archived)
-    .sort((a, b) => (STATUS_RANK[a.status] ?? 0) - (STATUS_RANK[b.status] ?? 0));
-  // Freed tables drop into a section below, newest first.
-  const freed = all
-    .filter((o) => o.archived)
-    .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
-  const active = orders.filter((o) => o.status === "received" || o.status === "preparing").length; // count still in progress
-  const unpaid = orders.filter((o) => o.payment_status !== "paid" && o.status !== "cancelled"); // still owe money
-  const pendingTotal = unpaid.reduce((s, o) => s + (parseFloat(o.total) || 0), 0); // total money outstanding
+  const live = all.filter((o) => !o.archived);
+  const freed = all.filter((o) => o.archived);
+  const active = live.filter((o) => o.status === "received" || o.status === "preparing").length;
+  const callCount = (state.data.calls || []).filter((c) => !c.resolved).length;
+  // Distinct tables that currently have live orders — one consolidated bill each.
+  const billTables = [...new Set(live.map((o) => (o.table_number || "").trim()).filter(Boolean))];
+  const view = state.ordersView || "live";
+
+  // Left-bar item: label + a count pill, highlighted when it's the open view.
+  const navItem = (key, label, count) =>
+    `<button class="ord-nav-item${view === key ? " active" : ""}" data-orders-view="${key}">
+       <span>${label}</span>${count ? `<span class="ord-nav-count">${count}</span>` : ""}</button>`;
+  const nav = `<aside class="ord-nav">
+      ${navItem("live", "● Live", live.length)}
+      ${navItem("previous", "Previous", freed.length)}
+      ${navItem("bills", "Bills", billTables.length)}
+      <div class="ord-nav-div"></div>
+      ${navItem("calls", "🔔 Calls", callCount)}
+    </aside>`;
+
+  let main;
+  if (view === "previous") main = ordersPreviousHtml(freed);
+  else if (view === "bills") main = ordersBillsHtml(live, billTables);
+  else if (view === "calls") main = ordersCallsHtml();
+  else main = ordersLiveHtml(live);
+
   const head = `<div class="ed-head">
-      <h2>Orders <span class="sub">· ${active} active / ${orders.length} total</span></h2>
+      <h2>Orders <span class="sub">· ${active} active / ${live.length} live</span></h2>
       <button class="btn" id="refreshOrders">↻ Refresh</button>
-    </div>
-    ${callsHtml()}
-    <div class="ord-note">⏳ <b>Pending bills:</b> ${unpaid.length} order${unpaid.length !== 1 ? "s" : ""} · ${inr(pendingTotal)} unpaid — mark each "Paid" once the guest settles up.</div>`;
-  if (!orders.length && !freed.length) return head + `<div class="empty">No orders yet. Orders placed from the menu show up here.</div>`;
+    </div>`;
+  return head + `<div class="ord-wrap">${nav}<div class="ord-main">${main}</div></div>`;
+}
+
+// LIVE view: current orders (newest stage first), grouped by table number, each
+// an order card with its full item detail + accept/serve/pay actions. Keeps the
+// bulk-select + "money owed" banner that staff rely on.
+function ordersLiveHtml(live) {
+  if (!live.length) return `<div class="empty">No active orders right now. Orders placed from the menu show up here.</div>`;
+  const orders = [...live].sort((a, b) =>
+    (String(a.table_number || "").localeCompare(String(b.table_number || ""), undefined, { numeric: true }))
+    || ((STATUS_RANK[a.status] ?? 0) - (STATUS_RANK[b.status] ?? 0)));
+  const unpaid = live.filter((o) => o.payment_status !== "paid" && o.status !== "cancelled");
+  const pendingTotal = unpaid.reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
+  const note = unpaid.length
+    ? `<div class="ord-note">⏳ <b>Pending bills:</b> ${unpaid.length} order${unpaid.length !== 1 ? "s" : ""} · ${inr(pendingTotal)} unpaid — mark each "Paid" once the guest settles up.</div>`
+    : "";
   const bulk = `<div class="ord-bulk">
       <label class="ord-check"><input type="checkbox" id="ordSelectAll"> Select all</label>
       <span id="ordSelCount" class="sub"></span>
       <button class="btn danger" id="ordDeleteSelected" disabled>Delete selected</button>
     </div>`;
-  const current = orders.length
-    ? bulk + `<div class="ord-grid">${orders.map((o) => orderCardHtml(o)).join("")}</div>`
-    : `<div class="empty">No active orders right now.</div>`;
-  const freedSection = freed.length
-    ? `<div class="ord-section-divider"><h3>✓ Freed tables <span class="sub">· ${freed.length}</span></h3>
-         <span class="ord-section-hint">Settled &amp; cleared off the floor — kept in records.</span>
-         <button class="btn danger" id="clearFreed">🗑 Clear all freed</button></div>
-       <div class="ord-grid ord-grid-freed">${freed.map((o) => orderCardHtml(o, true)).join("")}</div>`
-    : "";
-  return head + current + freedSection;
+  return note + bulk + `<div class="ord-grid">${orders.map((o) => orderCardHtml(o)).join("")}</div>`;
+}
+
+// PREVIOUS view: freed/cleared orders kept in records, newest first, each with a
+// "restore to floor" action and a "clear all" button.
+function ordersPreviousHtml(freed) {
+  if (!freed.length) return `<div class="empty">No previous orders yet. Freed tables land here.</div>`;
+  const sorted = [...freed].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  return `<div class="ord-section-divider"><h3>✓ Previous orders <span class="sub">· ${freed.length}</span></h3>
+       <span class="ord-section-hint">Settled &amp; cleared off the floor — kept in records.</span>
+       <button class="btn danger" id="clearFreed">🗑 Clear all</button></div>
+     <div class="ord-grid ord-grid-freed">${sorted.map((o) => orderCardHtml(o, true)).join("")}</div>`;
+}
+
+// BILLS view: one consolidated bill per table — every dish across that table's
+// orders (with its customizations), the running total, and what's paid vs due.
+function ordersBillsHtml(live, tables) {
+  if (!tables.length) return `<div class="empty">No open bills. A table's bill appears here once it has orders.</div>`;
+  const cards = tables.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).map((t) => {
+    const os = live.filter((o) => (o.table_number || "").trim() === t && o.status !== "cancelled");
+    // Flatten every dish across the table's orders into one bill list.
+    const lines = os.flatMap((o) => (o.items || []).map((i) => `<div class="ord-line"><span>${esc(i.title)} <b>×${esc(i.qty)}</b>${itemDetailLine(i)}</span><span>${esc(i.price)}</span></div>`)).join("");
+    const total = os.reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
+    const due = os.filter((o) => o.payment_status !== "paid").reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
+    const unpaidIds = os.filter((o) => o.payment_status !== "paid").map((o) => o.id);
+    const settle = unpaidIds.length
+      ? `<button class="ord-btn serve" data-pay-table="${esc(unpaidIds.join(","))}">💳 Mark whole bill paid</button>`
+      : `<button class="ord-btn ghost" data-free-table="${esc(t)}">✓ Free table</button>`;
+    return `<div class="ord-card bill-card${due > 0 ? " is-due" : " is-paid"}">
+        <div class="ord-card-head"><h3>Table ${esc(t)}</h3><span class="ord-pill ${due > 0 ? "received" : "served"}">${due > 0 ? "Unpaid" : "Paid"}</span></div>
+        <div class="ord-items">${lines}</div>
+        <div class="ord-total"><span>Total · ${os.length} order${os.length !== 1 ? "s" : ""}</span><span>${inr(total)}</span></div>
+        ${due > 0 ? `<div class="bill-due">Due <b>${inr(due)}</b></div>` : ""}
+        <div class="ord-actions">${settle}</div>
+      </div>`;
+  }).join("");
+  return `<div class="ord-grid">${cards}</div>`;
+}
+
+// CALLS view: the live waiter-call list (water/cutlery/bill…), or an empty note.
+function ordersCallsHtml() {
+  const calls = (state.data.calls || []).filter((c) => !c.resolved);
+  if (!calls.length) return `<div class="empty">No waiter calls right now.</div>`;
+  return callsHtml();
 }
 
 // freeTable: clear a settled table off the floor by archiving all its orders
@@ -940,6 +1010,14 @@ function renderEditor() {
     });
     ed.querySelectorAll("[data-restore]").forEach((btn) => {
       btn.onclick = () => restoreTable(btn.dataset.restore);
+    });
+    // Left-bar: switch which Orders view is showing (live / previous / bills / calls).
+    ed.querySelectorAll("[data-orders-view]").forEach((btn) => {
+      btn.onclick = () => { state.ordersView = btn.dataset.ordersView; renderEditor(); };
+    });
+    // Bills view: settle a table's WHOLE bill at once (mark every unpaid order paid).
+    ed.querySelectorAll("[data-pay-table]").forEach((btn) => {
+      btn.onclick = () => btn.dataset.payTable.split(",").filter(Boolean).forEach((id) => setOrderPayment(id, true));
     });
     const updateSel = () => {
       const ids = [...ed.querySelectorAll(".ord-select:checked")].map((c) => c.dataset.sel);
@@ -1438,8 +1516,10 @@ const itemsForOrder = (oid) => (state.board.items || []).filter((i) => i.order_i
 // Per-item rows for an order, unified: session order_items if present, else the items JSON.
 function orderItemRows(o) {
   const rows = itemsForOrder(o.id);
-  if (rows.length) return rows.map((it) => ({ kind: "session", id: it.id, title: it.title, qty: it.qty, status: it.status }));
-  return (o.items || []).map((it, idx) => ({ kind: "legacy", orderId: o.id, idx, title: it.title, qty: it.qty, status: it.status || "received" }));
+  // Carry options/removed/note through so the table panel can show the full
+  // customization (what the guest chose, what to leave out) — not just the name.
+  if (rows.length) return rows.map((it) => ({ kind: "session", id: it.id, title: it.title, qty: it.qty, status: it.status, options: it.options, removed: it.removed, note: it.note }));
+  return (o.items || []).map((it, idx) => ({ kind: "legacy", orderId: o.id, idx, title: it.title, qty: it.qty, status: it.status || "received", options: it.options, removed: it.removed, note: it.note }));
 }
 
 // What the guest tapped, as an emoji for the tile / call list.
@@ -1470,8 +1550,12 @@ function tableTileState(t) {
   const items = os.flatMap((o) => orderItemRows(o));
   const anyReceived = items.some((i) => i.status === "received");
   const anyPreparing = items.some((i) => i.status === "preparing");
-  const unpaid = os.some((o) => o.status !== "cancelled" && o.payment_status !== "paid");
-  const due = os.filter((o) => o.status !== "cancelled" && o.payment_status !== "paid").reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
+  // An order only becomes an "unpaid bill" (red outline) once it's ACCEPTED. A
+  // brand-new order still sitting at "received" hasn't been confirmed by staff
+  // yet, so it shouldn't flag the table red — that starts when you accept it.
+  const isUnpaidBill = (o) => o.status !== "cancelled" && o.status !== "received" && o.payment_status !== "paid";
+  const unpaid = os.some(isUnpaidBill);
+  const due = os.filter(isUnpaidBill).reduce((s, o) => s + (parseFloat(o.total) || 0), 0);
 
   let st = "free", label = "Free", meta = "tap to open";
   if (os.length) {
@@ -1503,7 +1587,10 @@ function tableTileState(t) {
   if (calls.length > 3) badges += `<span class="ftb call ftb-more">+${calls.length - 3}</span>`;
   return {
     st, label, meta, badges,
-    pay: os.length ? (unpaid ? "red" : "green") : "", // outline = payment: red unpaid / green paid
+    // Outline = payment, but ONLY once an order is accepted: red = an accepted
+    // unpaid bill, green = accepted & fully paid, none = nothing accepted yet (a
+    // brand-new "received" order shows no pay ring until staff accepts it).
+    pay: unpaid ? "red" : (os.some((o) => o.status !== "cancelled" && o.status !== "received" && o.payment_status === "paid") ? "green" : ""),
     done: st === "done" && !unpaid, // served AND paid → offer RST/CLS (never free an unpaid table)
     hasNew: anyReceived,        // a new order waiting to be accepted
     hasCall: calls.length > 0,
@@ -1710,7 +1797,7 @@ function itemRowHtml(row) {
   } else if (row.status === "served") {
     btn = `<span class="sx-served">✓ served</span>`;
   }
-  return `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill ${esc(row.status)}">${esc(row.status)}</span> ${esc(row.title)} ×${esc(row.qty)}</div><div>${btn}</div></div>`;
+  return `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill ${esc(row.status)}">${esc(row.status)}</span> ${esc(row.title)} ×${esc(row.qty)}${itemDetailLine(row)}</div><div>${btn}</div></div>`;
 }
 
 // renderTablePanel: draw the big "do everything for this table" pop-up — guests,
@@ -1774,7 +1861,7 @@ function renderTablePanel() {
       let body;
       if (!accepted) {
         // whole-order accept first; dishes are listed but not yet individually actionable
-        body = orderItemRows(o).map((r) => `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill received">received</span> ${esc(r.title)} ×${esc(r.qty)}</div></div>`).join("")
+        body = orderItemRows(o).map((r) => `<div class="sx-item"><div class="sx-item-info"><span class="ord-pill received">received</span> ${esc(r.title)} ×${esc(r.qty)}${itemDetailLine(r)}</div></div>`).join("")
           + `<button class="btn small primary tp-accept" data-accept="${esc(o.id)}">✓ Accept &amp; prepare order</button>`;
       } else {
         // accepted → serve each dish one at a time, or serve everything at once
