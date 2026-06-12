@@ -66,6 +66,10 @@ body {
 
 /* ---------- layout ---------- */
 .layout { display: grid; grid-template-columns: var(--sidebar-w, 320px) 1fr; height: calc(100vh - 60px); }
+/* Full-bleed tabs (Tables floor, Orders board): drop the placeholder left list so
+   the content spans the whole width — no wasted empty column. */
+.layout.full-bleed { grid-template-columns: 1fr; }
+.layout.full-bleed > .sidebar { display: none; }
 .sidebar { position: relative; border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
 .sidebar-resizer { position: absolute; top: 0; right: -3px; width: 7px; height: 100%; cursor: col-resize; z-index: 6; transition: background .15s; }
 .sidebar-resizer:hover { background: color-mix(in srgb, var(--gold) 45%, transparent); }

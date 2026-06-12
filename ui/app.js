@@ -2177,6 +2177,11 @@ function setTab(tab) {
   const noList = tab === "general" || tab === "orders" || tab === "tables" || tab === "log";
   $("#newBtn").style.display = noList ? "none" : "";
   $("#search").style.display = noList ? "none" : "";
+  // The Tables floor and Orders board are full-width views — the left list is just
+  // a placeholder there, so hide it and let the content use the whole width (no
+  // wasted empty column). Dishes/Categories/Tags keep their list; Log/General keep
+  // the sidebar too since their forms read better at a contained width.
+  document.querySelector(".layout")?.classList.toggle("full-bleed", tab === "tables" || tab === "orders");
   renderCatFilter(); // show category chips on Dishes, hide elsewhere
   renderList();
   renderEditor();
