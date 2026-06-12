@@ -396,6 +396,10 @@ app.post("/api/members/:id/make-head", wrap(async (req, res) => {
   const found = must(await supabase.from("session_members").select("id,session_id,role,removed").eq("id", req.params.id).limit(1));
   const m = found[0];
   if (!m) return res.status(404).json({ error: "member not found" });
+  // Edge guard: never promote into a CLOSED session (e.g. staff closed the table
+  // a second before tapping Transfer) — that would resurrect a zombie head.
+  const sessRows = must(await supabase.from("sessions").select("status").eq("id", m.session_id).limit(1));
+  if (!sessRows[0] || sessRows[0].status !== "open") return res.status(400).json({ error: "table is not open" });
   if (m.role === "owner" && !m.removed) return res.json(m); // already the head — nothing to do
   must(await supabase.from("session_members").update({ removed: true })
     .eq("session_id", m.session_id).eq("role", "owner").eq("removed", false).select());
