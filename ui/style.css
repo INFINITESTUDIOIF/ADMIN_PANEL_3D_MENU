@@ -632,14 +632,19 @@ body {
 .sx-served { font-size: 11px; color: var(--green); font-weight: 700; }
 
 /* ===================== UNIFIED FLOOR (redesigned) ===================== */
-.floor-wrap { display: flex; gap: 20px; align-items: flex-start; }
+/* margin-right pulls the Dining-sessions panel closer to the right edge (the
+   .editor has 28px side padding; -14px reclaims half of it on the right only,
+   so the panel hugs the edge without overflowing). */
+.floor-wrap { display: flex; gap: 20px; align-items: flex-start; margin-right: -14px; }
 .floor-main { flex: 1; min-width: 0; }
-.floor-side { width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 14px; }
+/* margin-top gives the panel breathing room so its first card isn't jammed
+   against the top / the floor legend line. */
+.floor-side { width: 290px; flex: 0 0 290px; display: flex; flex-direction: column; gap: 14px; margin-top: 10px; }
 /* Stack the floor + side panel below 1040px. The !important is required because
    the side panel carries an inline width:${sideW}px from the drag-to-resize
    handle, and an inline style would otherwise beat this rule and keep the panel
    its dragged pixel width instead of going full-width on a narrow screen. */
-@media (max-width: 1040px) { .floor-wrap { flex-direction: column; } .floor-side { width: 100% !important; flex: none !important; } }
+@media (max-width: 1040px) { .floor-wrap { flex-direction: column; margin-right: 0; } .floor-side { width: 100% !important; flex: none !important; margin-top: 0; } }
 
 /* legend — every state + its colour */
 .floor-legend { display: flex; flex-wrap: wrap; gap: 16px; margin: 2px 0 18px; font-size: 12px; color: var(--muted); }
