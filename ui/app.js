@@ -1671,6 +1671,7 @@ function tableTileState(t) {
     hasNew: anyReceived,        // a new order waiting to be accepted
     hasCall: calls.length > 0,
     hasReq: reqs.length > 0,    // a guest is waiting to be let in
+    hasJoin: pending > 0,       // a partner asked to join and awaits approval
   };
 }
 
@@ -1722,12 +1723,17 @@ function floorHtml() {
 
   let tiles = "";
   for (let i = 1; i <= n; i++) {
-    const { st, label, meta, badges, pay, done, hasNew, hasCall } = tableTileState(i); // everything this tile needs
+    const { st, label, meta, badges, pay, done, hasNew, hasCall, hasReq, hasJoin } = tableTileState(i); // everything this tile needs
     // quick action(s) on the tile itself — no need to open the detail view.
     // Show the ONE button that matches the table's situation right now.
     let quick = "";
     if ((st === "free" || st === "req") && sessionsOn) quick = `<button class="btn small primary ftq" data-quick-open="${i}">Open</button>`;
     else if (hasNew) quick = `<button class="btn small primary ftq" data-quick-accept="${i}">Accept</button>`;
+    // Someone is ASKING at this table (a partner waiting to join, or a request on
+    // an occupied table) → an Attend button right on the tile (owner, 2026-06-12).
+    // It opens the table's panel, where the decision lives (OK/Transfer/✕/Ban) —
+    // a request needs a choice, so unlike a water call it can't be blind-resolved.
+    else if (hasJoin || hasReq) quick = `<button class="btn small primary ftq" data-quick-requests="${i}">Attend</button>`;
     else if (done) quick = `<div class="ft-quick2"><button class="btn small ftq2" data-quick-restart="${i}" title="Restart — clear orders, keep table open">RST</button><button class="btn small primary ftq2" data-quick-close="${i}" title="Close & free the table">CLS</button></div>`;
     else if (hasCall) quick = `<button class="btn small ftq" data-quick-attend="${i}">Attend</button>`;
     // A faint chair watermark marks an OFF/free table (an empty seat) — a quiet,
@@ -1765,7 +1771,20 @@ function floorHtml() {
       </div>
       <button class="btn small primary" id="fcSaveGeo">Save location</button></div>`;
 
-  const reqCard = sessionsOn ? `<div class="fc-card"><h3>Requests <span class="sub">· ${reqs.length}</span></h3>${reqs.length ? reqs.map((r) => {
+  // Pending JOINERS (partners waiting to be let into an open table) belong in this
+  // queue too (owner, 2026-06-12) — before this they only existed as a tiny 🙋
+  // badge on the tile. Each row offers the full set: ✕ decline, Ban (confirmed,
+  // declines AND blocklists), Transfer (they become the head — the current head
+  // is kicked; confirmed), and OK (approve into the table).
+  const joiners = [];
+  (state.board.sessions || []).filter((ss) => ss.status === "open").forEach((ss) => {
+    membersOf(ss.id).filter((m) => !m.approved && !m.removed).forEach((m) => joiners.push({ ...m, table_number: ss.table_number }));
+  });
+  const joinerRows = joiners.map((m) =>
+    `<div class="sx-req"><div class="sx-req-info"><span class="sx-tag sx-tag-join">join</span> ${esc(m.name || "Guest")} · join T${esc(m.table_number)}<small>${esc(timeAgo(m.joined_at))}</small></div><div class="sx-req-actions"><button class="btn small" data-mem-deny="${esc(m.id)}" title="Decline this join request">✕</button><button class="btn small danger" data-mem-ban="${esc(m.id)}" data-ban-phone="${esc(m.phone || "")}" title="Decline AND add to the blocklist">Ban</button><button class="btn small" data-mem-head="${esc(m.id)}" title="Make them the table's head — the current head is kicked">Transfer</button><button class="btn small primary" data-mem-approve="${esc(m.id)}">OK</button></div></div>`
+  ).join("");
+  const reqCount = reqs.length + joiners.length;
+  const reqCard = sessionsOn ? `<div class="fc-card"><h3>Requests <span class="sub">· ${reqCount}</span></h3>${reqCount ? joinerRows + reqs.map((r) => {
     const who = esc(r.name || r.phone || "Someone");
     const what = r.type === "open" ? `open T${esc(r.table_number)}` : r.type === "join" ? `join T${esc(r.table_number)}` : `access T${esc(r.table_number)}`;
     // "access" = a guest asked for a WAITER to come over (e.g. their join was
@@ -1806,6 +1825,15 @@ function bindFloor() {
   ed.querySelectorAll("[data-quick-open]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openTableSession(b.dataset.quickOpen); }));
   ed.querySelectorAll("[data-quick-accept]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); acceptTableOrders(b.dataset.quickAccept); }));
   ed.querySelectorAll("[data-quick-attend]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); attendTableCalls(b.dataset.quickAttend); }));
+  // Tile "Attend" for a join/access request: open the table's panel (the request
+  // needs a decision — approve / transfer / decline / ban — not a blind resolve).
+  ed.querySelectorAll("[data-quick-requests]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); openTablePanel(b.dataset.quickRequests); }));
+  // The Requests card's joiner rows reuse the member actions (same data-attrs as
+  // the table panel, but bound here because these rows live in the side panel).
+  ed.querySelectorAll("[data-mem-approve]").forEach((b) => (b.onclick = () => memberAction(b.dataset.memApprove, "approve")));
+  ed.querySelectorAll("[data-mem-deny]").forEach((b) => (b.onclick = () => memberAction(b.dataset.memDeny, "remove")));
+  ed.querySelectorAll("[data-mem-head]").forEach((b) => (b.onclick = () => makeHead(b.dataset.memHead)));
+  ed.querySelectorAll("[data-mem-ban]").forEach((b) => (b.onclick = () => banMember(b.dataset.memBan, b.dataset.banPhone)));
   ed.querySelectorAll("[data-quick-restart]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); restartTable(b.dataset.quickRestart); }));
   ed.querySelectorAll("[data-quick-close]").forEach((b) => (b.onclick = (e) => { e.stopPropagation(); closeTableQuick(b.dataset.quickClose); }));
   ed.querySelectorAll("[data-req-approve]").forEach((b) => (b.onclick = () => resolveRequest(b.dataset.reqApprove, "approved")));
@@ -1918,7 +1946,7 @@ function renderTablePanel() {
         else acts += `<button class="btn small" data-mem-kick="${esc(m.id)}">Kick</button>`;
         // Any guest who isn't the head can be handed the table (owner's "transfer"):
         // they become head + approved; the old head is kicked by the server.
-        if (!owner) acts += `<button class="btn small" data-mem-head="${esc(m.id)}" title="Transfer the table to this guest">👑 Head</button>`;
+        if (!owner) acts += `<button class="btn small" data-mem-head="${esc(m.id)}" title="Make them the table's head — the current head is kicked">Transfer</button>`;
         acts += `<button class="btn small danger" data-mem-ban="${esc(m.id)}" data-ban-phone="${esc(m.phone || "")}">Ban</button>`;
         return `<div class="sx-mem"><div class="sx-mem-info">${owner ? "👑 " : "🤝 "}<b>${esc(m.name || (owner ? "Head" : "Guest"))}</b> ${status}${m.phone_verified ? ` <span class="sx-ok">✓</span>` : ""}</div><div class="sx-mem-acts">${acts}</div></div>`;
       }).join("") : `<div class="sx-empty">No one has joined yet.</div>`;
