@@ -231,7 +231,27 @@ function renderList() {
     return;
   }
   if (state.tab === "orders") {
-    ul.appendChild(el(`<li class="list-item active"><div class="thumb"><i class="fas fa-receipt"></i></div><div class="meta"><b>Orders</b><small>incoming</small></div></li>`));
+    // The left column IS the order navigation now — Today / Previous / Calls —
+    // instead of a single redundant "Orders / incoming" card. Clicking a row
+    // switches which set of order cards shows in the main area on the right.
+    const { today, previous, callCount } = ordersBuckets();
+    const view = ordersViewKey();
+    const mk = (key, icon, label, count) => {
+      const li = el(`<li class="list-item${view === key ? " active" : ""}" data-orders-view="${key}">
+        <div class="thumb">${icon}</div>
+        <div class="meta"><b>${label}</b></div>
+        ${count ? `<span class="ord-nav-count">${count}</span>` : ""}
+      </li>`);
+      li.onclick = () => {
+        state.ordersView = key;
+        renderList();   // re-highlight the chosen row
+        renderEditor(); // redraw the order cards on the right
+      };
+      return li;
+    };
+    ul.appendChild(mk("today", '<i class="fas fa-circle" style="color:#7ec88a"></i>', "Today", today.length));
+    ul.appendChild(mk("previous", '<i class="fas fa-receipt"></i>', "Previous", previous.length));
+    ul.appendChild(mk("calls", "🔔", "Calls", callCount));
     return;
   }
   if (state.tab === "tables") {
@@ -762,31 +782,36 @@ function callsHtml() {
 // ordersHtml: the Orders tab. A LEFT BAR switches the main panel between Live
 // orders, Previous orders (which ARE the bills — past + cancelled), and waiter
 // Calls. The header shows the live counts.
-function ordersHtml() {
+// Normalize the selected Orders view, mapping the old "live"/"bills" keys to the
+// current "today"/"previous". Shared by the sidebar nav and the main view so they
+// always agree on what's selected.
+function ordersViewKey() {
+  return (state.ordersView === "bills" || state.ordersView === "live")
+    ? (state.ordersView === "bills" ? "previous" : "today")
+    : (state.ordersView || "today");
+}
+
+// Split orders by DAY: TODAY's (live AND already-served, shown together) vs
+// PREVIOUS (anything archived, cancelled, or older than today — the bill records),
+// plus the count of unresolved waiter calls. ONE source of truth for both the
+// sidebar nav counts and the main view, so they can never disagree.
+function ordersBuckets() {
   const all = state.data.orders || [];
-  // Split by DAY: TODAY's orders (live AND already-served — shown together) stay
-  // in the main view; everything from before today, plus anything cancelled or
-  // freed/archived, drops into Previous (the bill records). Each order lands in
-  // exactly one of the two.
   const startToday = new Date(); startToday.setHours(0, 0, 0, 0);
   const ts = startToday.getTime();
   const isToday = (o) => o.created_at && new Date(o.created_at).getTime() >= ts;
   const today = all.filter((o) => !o.archived && o.status !== "cancelled" && isToday(o));
   const previous = all.filter((o) => o.archived || o.status === "cancelled" || !isToday(o));
-  const active = today.filter((o) => o.status === "received" || o.status === "preparing").length;
   const callCount = (state.data.calls || []).filter((c) => !c.resolved).length;
-  const view = (state.ordersView === "bills" || state.ordersView === "live") ? (state.ordersView === "bills" ? "previous" : "today") : (state.ordersView || "today"); // map old keys
+  return { today, previous, callCount };
+}
 
-  // Left-bar item: label + a count pill, highlighted when it's the open view.
-  const navItem = (key, label, count) =>
-    `<button class="ord-nav-item${view === key ? " active" : ""}" data-orders-view="${key}">
-       <span>${label}</span>${count ? `<span class="ord-nav-count">${count}</span>` : ""}</button>`;
-  const nav = `<aside class="ord-nav">
-      ${navItem("today", "● Today", today.length)}
-      ${navItem("previous", "Previous", previous.length)}
-      <div class="ord-nav-div"></div>
-      ${navItem("calls", "🔔 Calls", callCount)}
-    </aside>`;
+function ordersHtml() {
+  // The Today / Previous / Calls nav lives in the LEFT SIDEBAR now (see renderList).
+  // Here we only build the heading + the selected view's cards in the main area.
+  const { today, previous } = ordersBuckets();
+  const active = today.filter((o) => o.status === "received" || o.status === "preparing").length;
+  const view = ordersViewKey();
 
   let main;
   if (view === "previous") main = ordersPreviousHtml(previous);
@@ -797,7 +822,7 @@ function ordersHtml() {
       <h2>Orders <span class="sub">· ${active} active / ${today.length} today</span></h2>
       <button class="btn" id="refreshOrders">↻ Refresh</button>
     </div>`;
-  return head + `<div class="ord-wrap">${nav}<div class="ord-main">${main}</div></div>`;
+  return head + `<div class="ord-wrap"><div class="ord-main">${main}</div></div>`;
 }
 
 // LIVE view: current orders (newest stage first), grouped by table number, each
@@ -1533,7 +1558,16 @@ async function attendCall(id) {
 
 // Five quick lookups used all over the unified floor — each filters the loaded
 // data down to one table (or one order):
-const ordersForTable = (t) => (state.data.orders || []).filter((o) => !o.archived && (o.table_number || "").trim() === String(t)); // live orders at table t
+const ordersForTable = (t) => {
+  const list = (state.data.orders || []).filter((o) => !o.archived && (o.table_number || "").trim() === String(t)); // live orders at table t
+  const sessionsOn = !!(state.data.settings || {}).sessions_enabled;
+  // If sessions are ON and this table has NO open session, any leftover non-archived
+  // orders belong to a CLOSED session (stale) — the meal's over, nobody's there. Don't
+  // paint the tile with them; the table is Free. (Same guard callsForTable uses, so a
+  // closed table can never keep showing "Preparing"/"Served" from an old order.)
+  if (sessionsOn && !openSessionForTable(t)) return [];
+  return list;
+};
 const openSessionForTable = (t) => (state.board.sessions || []).find((s) => String(s.table_number) === String(t) && s.status === "open"); // t's open session
 // Open (unresolved) waiter calls at table t. Safety net: when dining sessions are
 // ON, a call only counts while the table is actually OPEN — so a free/closed table
@@ -2200,7 +2234,7 @@ async function loadOrders() {
       state.data.calls = await api("GET", "/calls");
       lastCallCount = (state.data.calls || []).filter((c) => !c.resolved).length;
     } catch {}
-    if (state.tab === "orders") renderEditor();
+    if (state.tab === "orders") { renderList(); renderEditor(); } // sidebar counts + cards
   } catch (e) {
     toast("Could not load orders: " + e.message, "err");
   }
@@ -2311,7 +2345,7 @@ async function pollOrders() {
       (board && board.requests ? board.requests.length : 0),
     ]);
     const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
-    if (state.tab === "orders" && sig !== lastPollSig && !typing) renderEditor();
+    if (state.tab === "orders" && sig !== lastPollSig && !typing) { renderList(); renderEditor(); }
     lastPollSig = sig;
     if (state.tab === "tables" && !floorOpsInFlight) loadSessions(true); // keep the live floor fresh
   }

@@ -295,6 +295,9 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .ord-nav-item:hover { color: var(--text); border-color: color-mix(in srgb, var(--gold) 35%, var(--line)); }
 .ord-nav-item.active { background: var(--gold); color: #2a1d0c; border-color: var(--gold); }
 .ord-nav-count { min-width: 22px; text-align: center; font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: rgba(0,0,0,0.22); }
+/* When the Today/Previous/Calls nav lives in the left sidebar (list-item rows),
+   push its count pill to the far right of the row. */
+.list-item .ord-nav-count { margin-left: auto; }
 .ord-nav-div { height: 1px; background: var(--line); margin: 6px 4px; }
 .ord-main { flex: 1; min-width: 0; }
 

@@ -349,7 +349,26 @@ app.post("/api/sessions/open", wrap(async (req, res) => {
 // Close a session (end the meal).
 app.post("/api/sessions/:id/close", wrap(async (req, res) => {
   const row = must(await supabase.from("sessions").update({ status: "closed", closed_at: nowIso() }).eq("id", req.params.id).select());
-  res.json(row[0] || null);
+  const sess = row[0];
+  // Closing the table ends the meal, so clear its orders SERVER-SIDE (every close
+  // path runs this — the staff button, "Close all", a location auto-close — not just
+  // the editor's client code, which used to miss orders it hadn't loaded):
+  //   • UNFINISHED orders (received/preparing) -> cancelled + archived. The guest's
+  //     order tracker reads orders.status, so this is what flips their screen to
+  //     "Order cancelled". They leave the floor and drop into Previous as a record.
+  //   • SERVED-but-unarchived orders -> just archived (kept as a completed bill).
+  // Matched by table_number (a table has at most one open session at a time), which
+  // also sweeps up any stale leftovers from earlier closed sessions at that table.
+  if (sess && sess.table_number != null) {
+    const t = String(sess.table_number).trim();
+    must(await supabase.from("orders")
+      .update({ status: "cancelled", archived: true })
+      .eq("table_number", t).eq("archived", false).in("status", ["received", "preparing"]).select());
+    must(await supabase.from("orders")
+      .update({ archived: true })
+      .eq("table_number", t).eq("archived", false).eq("status", "served").select());
+  }
+  res.json(sess || null);
 }));
 
 // Flip auto-approve for a session.
