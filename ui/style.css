@@ -87,6 +87,11 @@ body {
   display: flex; gap: 7px; padding: 10px 14px; border-bottom: 1px solid var(--line);
   overflow-x: auto; scrollbar-width: thin; flex-wrap: nowrap;
 }
+/* The category-filter chips only apply to the Dishes tab. On Categories/Tags the
+   JS sets `hidden`, but our `display:flex` above would otherwise win and leave an
+   empty padded strip with a border. Collapse it completely when hidden so there's
+   no stray empty section on the left. (Attribute+class beats the rule above.) */
+.cat-filter[hidden] { display: none; }
 .cat-filter::-webkit-scrollbar { height: 6px; }
 .cat-filter::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
 .cat-chip {
