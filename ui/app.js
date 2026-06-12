@@ -1497,6 +1497,14 @@ async function kickMember(id) {
   try { await api("POST", "/members/" + id + "/remove"); await loadSessions(); toast("Kicked", "ok"); }
   catch (e) { toast("Failed: " + e.message, "err"); }
 }
+// Transfer the table: this guest becomes the HEAD (owns the tab, approves
+// joiners) and the current head is kicked out — for when the original head left
+// the café or never answers join requests. Confirmed first: it's a hand-over.
+async function makeHead(id) {
+  if (!(await confirmDialog("Make this guest the table's head? The current head is kicked out and this guest takes over approvals.", "Transfer"))) return;
+  try { await api("POST", "/members/" + id + "/make-head"); await loadSessions(); toast("Head transferred", "ok"); }
+  catch (e) { toast("Failed: " + e.message, "err"); }
+}
 async function banMember(id, phone) {
   if (!(await confirmDialog("Ban this guest? They're kicked now and added to the blocklist.", "Ban"))) return;
   try {
@@ -1737,13 +1745,18 @@ function floorHtml() {
   // side panel's "Dining sessions" card, well away from the speed-click zone.
   const main = `<div class="floor-main"><div class="ed-head"><h2>Tables <span class="sub">· live floor</span></h2><button class="btn" id="refreshFloor">↻ Refresh</button></div>${legend}<div class="ftile-grid">${tiles}</div></div>`;
 
-  // side panel — session controls + café location + requests + blocklist (all here, not in General)
+  // side panel — everyday things FIRST (whole-floor open/close, requests, needs),
+  // rarely-touched feature switches + café location LAST (owner, 2026-06-12:
+  // "these on/off things you rarely use — keep them at the bottom").
   const tgl = (label, key) => `<label class="fc-toggle"><input type="checkbox" data-setting="${key}" ${s[key] ? "checked" : ""}/><span class="fc-sw"></span><span>${label}</span></label>`;
+  // Whole-floor bulk actions — used every open/close of the day, so they live on
+  // top. (Deliberately STILL not next to the header's Refresh button: a misfired
+  // speed-click there once closed the whole floor. Both confirm before acting.)
+  const bulkCard = sessionsOn ? `<div class="fc-card"><h3>Whole floor</h3><div class="fc-bulk"><button class="btn small" id="floorOpenAll">⬆ Open all</button><button class="btn small danger" id="floorCloseAll">⬇ Close all</button></div></div>` : "";
   const controls = `<div class="fc-card">
-      <h3>Dining sessions</h3>
+      <h3>Features <span class="sub">· rarely changed</span></h3>
       ${tgl("System ON", "sessions_enabled")}
       <div class="fc-sub"${sessionsOn ? "" : " hidden"}>${tgl("Require location", "require_location")}${tgl("Require code", "require_otp")}</div>
-      ${sessionsOn ? `<h4>Whole floor</h4><div class="fc-bulk"><button class="btn small" id="floorOpenAll">⬆ Open all</button><button class="btn small danger" id="floorCloseAll">⬇ Close all</button></div>` : ""}
       <h4>Café location</h4>
       <div class="fc-geo">
         <label class="fc-field"><span>Latitude (north–south)</span><input class="sx-input" id="fcLat" placeholder="e.g. 23.0274" value="${s.geo_lat ?? ""}"/></label>
@@ -1755,7 +1768,11 @@ function floorHtml() {
   const reqCard = sessionsOn ? `<div class="fc-card"><h3>Requests <span class="sub">· ${reqs.length}</span></h3>${reqs.length ? reqs.map((r) => {
     const who = esc(r.name || r.phone || "Someone");
     const what = r.type === "open" ? `open T${esc(r.table_number)}` : r.type === "join" ? `join T${esc(r.table_number)}` : `access T${esc(r.table_number)}`;
-    return `<div class="sx-req"><div class="sx-req-info"><span class="sx-tag sx-tag-${esc(r.type)}">${esc(r.type)}</span> ${who} · ${what}<small>${esc(timeAgo(r.created_at))}</small></div><div class="sx-req-actions"><button class="btn small" data-req-deny="${esc(r.id)}">✕</button><button class="btn small primary" data-req-approve="${esc(r.id)}">${r.type === "open" ? "Open" : "OK"}</button></div></div>`;
+    // "access" = a guest asked for a WAITER to come over (e.g. their join was
+    // declined, or location failed) — so the quick action reads "✓ Attend",
+    // exactly like a water call, instead of an ambiguous "OK".
+    const okLabel = r.type === "open" ? "Open" : r.type === "access" ? "✓ Attend" : "OK";
+    return `<div class="sx-req"><div class="sx-req-info"><span class="sx-tag sx-tag-${esc(r.type)}">${esc(r.type)}</span> ${who} · ${what}<small>${esc(timeAgo(r.created_at))}</small></div><div class="sx-req-actions"><button class="btn small" data-req-deny="${esc(r.id)}">✕</button><button class="btn small primary" data-req-approve="${esc(r.id)}">${okLabel}</button></div></div>`;
   }).join("") : `<div class="sx-empty">No pending requests.</div>`}</div>` : "";
 
   // Active waiter calls across all OPEN tables (water/napkin/clean…), one row each.
@@ -1769,7 +1786,7 @@ function floorHtml() {
   const blkCard = sessionsOn ? `<div class="fc-card"><h3>Blocked <span class="sub">· ${blocks.length}</span></h3>${blocks.length ? blocks.map((b) => `<div class="sx-blk"><span>${b.phone ? "📵 " + esc(b.phone) : "🚫 T" + esc(b.table_number)}</span><button class="btn small" data-unblock="${esc(b.id)}">Unblock</button></div>`).join("") : `<div class="sx-empty">Nobody blocked.</div>`}<div class="sx-blk-add"><input class="sx-input" id="blkPhone" placeholder="Phone/email"/><input class="sx-input sx-input-sm" id="blkTable" placeholder="T#"/><button class="btn small" id="blkAdd">Block</button></div></div>` : "";
 
   const sideW = state.floorSideW || 300;
-  return `<div class="floor-wrap">${main}<div class="floor-resizer" id="floorResizer" title="Drag to resize"></div><aside class="floor-side" style="width:${sideW}px;flex:0 0 ${sideW}px">${controls}${reqCard}${needsCard}${blkCard}</aside></div>`;
+  return `<div class="floor-wrap">${main}<div class="floor-resizer" id="floorResizer" title="Drag to resize"></div><aside class="floor-side" style="width:${sideW}px;flex:0 0 ${sideW}px">${bulkCard}${reqCard}${needsCard}${blkCard}${controls}</aside></div>`;
 }
 
 // bindFloor: wire up the unified floor after it's drawn — clicking a tile opens
@@ -1899,6 +1916,9 @@ function renderTablePanel() {
         let acts = "";
         if (!m.approved) acts += `<button class="btn small primary" data-mem-approve="${esc(m.id)}">Approve</button><button class="btn small" data-mem-deny="${esc(m.id)}">Deny</button>`;
         else acts += `<button class="btn small" data-mem-kick="${esc(m.id)}">Kick</button>`;
+        // Any guest who isn't the head can be handed the table (owner's "transfer"):
+        // they become head + approved; the old head is kicked by the server.
+        if (!owner) acts += `<button class="btn small" data-mem-head="${esc(m.id)}" title="Transfer the table to this guest">👑 Head</button>`;
         acts += `<button class="btn small danger" data-mem-ban="${esc(m.id)}" data-ban-phone="${esc(m.phone || "")}">Ban</button>`;
         return `<div class="sx-mem"><div class="sx-mem-info">${owner ? "👑 " : "🤝 "}<b>${esc(m.name || (owner ? "Head" : "Guest"))}</b> ${status}${m.phone_verified ? ` <span class="sx-ok">✓</span>` : ""}</div><div class="sx-mem-acts">${acts}</div></div>`;
       }).join("") : `<div class="sx-empty">No one has joined yet.</div>`;
@@ -1965,6 +1985,7 @@ function renderTablePanel() {
   wrap.querySelectorAll("[data-mem-approve]").forEach((b) => (b.onclick = () => memberAction(b.dataset.memApprove, "approve")));
   wrap.querySelectorAll("[data-mem-deny]").forEach((b) => (b.onclick = () => memberAction(b.dataset.memDeny, "remove")));
   wrap.querySelectorAll("[data-mem-kick]").forEach((b) => (b.onclick = () => kickMember(b.dataset.memKick)));
+  wrap.querySelectorAll("[data-mem-head]").forEach((b) => (b.onclick = () => makeHead(b.dataset.memHead)));
   wrap.querySelectorAll("[data-mem-ban]").forEach((b) => (b.onclick = () => banMember(b.dataset.memBan, b.dataset.banPhone)));
   const rst = wrap.querySelector("[data-tp-restart]"); if (rst) rst.onclick = () => restartTable(rst.dataset.tpRestart);
   wrap.querySelectorAll("[data-item-next]").forEach((b) => (b.onclick = () => itemStatus(b.dataset.itemNext, b.dataset.itemStatus)));

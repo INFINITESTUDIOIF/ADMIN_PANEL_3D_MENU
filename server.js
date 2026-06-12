@@ -387,6 +387,22 @@ app.post("/api/members/:id/remove", wrap(async (req, res) => {
   const row = must(await supabase.from("session_members").update({ removed: true }).eq("id", req.params.id).select());
   res.json(row[0] || null);
 }));
+// Transfer the table to a different guest (owner request, 2026-06-12): the chosen
+// member becomes the HEAD (role 'owner', auto-approved) and the current head is
+// kicked (removed=true — their phone finds out on its next poll). Used when the
+// original head left the café or won't answer join requests. Kicking the old head
+// FIRST keeps the one-head-per-session rule true at every moment.
+app.post("/api/members/:id/make-head", wrap(async (req, res) => {
+  const found = must(await supabase.from("session_members").select("id,session_id,role,removed").eq("id", req.params.id).limit(1));
+  const m = found[0];
+  if (!m) return res.status(404).json({ error: "member not found" });
+  if (m.role === "owner" && !m.removed) return res.json(m); // already the head — nothing to do
+  must(await supabase.from("session_members").update({ removed: true })
+    .eq("session_id", m.session_id).eq("role", "owner").eq("removed", false).select());
+  const row = must(await supabase.from("session_members")
+    .update({ role: "owner", approved: true, removed: false }).eq("id", m.id).select());
+  res.json(row[0] || null);
+}));
 
 // Advance one item's kitchen status (received -> preparing -> served).
 // IMPORTANT: after updating the item, we recompute the PARENT order's overall
