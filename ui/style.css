@@ -333,7 +333,10 @@ input:disabled { opacity: .55; cursor: not-allowed; }
 .ord-pill.preparing { background: rgba(232,161,60,0.18); color: #e8a13c; }
 .ord-pill.served { background: rgba(74,222,128,0.16); color: #4ade80; }
 .ord-pill.cancelled { background: rgba(239,68,68,0.16); color: #ef4444; }
-.ord-pill.building { background: rgba(96,165,250,0.16); color: #60a5fa; } /* pre-order: in the shared cart, not sent yet */
+/* pre-order: in the shared cart, not sent yet. Blackish-grey ON PURPOSE (owner,
+   2026-06-12): it used to be blue, which clashed with the blue "Preparing" on the
+   floor board. Grey reads as "not real yet"; red stays reserved for alerts. */
+.ord-pill.building { background: rgba(35,35,42,0.85); color: #a8a8b3; border: 1px solid rgba(140,140,155,0.35); }
 .pay-pill { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
 .pay-pill.pending { background: rgba(232,161,60,0.16); color: #e8a13c; border: 1px solid rgba(232,161,60,0.4); }
 .pay-pill.paid { background: rgba(74,222,128,0.16); color: #4ade80; border: 1px solid rgba(74,222,128,0.4); }
